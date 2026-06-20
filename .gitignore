@@ -1,0 +1,16 @@
+# dependencies / tooling
+node_modules/
+package-lock.json
+
+# preview artifacts
+/preview/
+*.local
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# logs
+*.log

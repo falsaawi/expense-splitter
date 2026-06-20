@@ -1,0 +1,19 @@
+{
+  "name": "TripSplit — Share travel costs",
+  "short_name": "TripSplit",
+  "description": "Split travel dinner costs fairly among whoever attended. Snap the invoice, pick who paid and who was there.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f5f6fb",
+  "theme_color": "#6366f1",
+  "icons": [
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#6366f1"/>
+      <stop offset="0.55" stop-color="#8b5cf6"/>
+      <stop offset="1" stop-color="#d946ef"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="url(#g)"/>
+  <!-- receipt -->
+  <g transform="translate(146 96)">
+    <path d="M20 0 h180 a20 20 0 0 1 20 20 v300 l-30 -20 -30 20 -30 -20 -30 20 -30 -20 -30 20 -30 -20 v-300 a20 20 0 0 1 20 -20 z" fill="#ffffff"/>
+    <rect x="44" y="58" width="132" height="20" rx="10" fill="#c7c9f7"/>
+    <rect x="44" y="104" width="132" height="20" rx="10" fill="#e4e5fb"/>
+    <rect x="44" y="150" width="92" height="20" rx="10" fill="#e4e5fb"/>
+  </g>
+  <!-- split arrows badge -->
+  <circle cx="356" cy="356" r="86" fill="#10b981" stroke="#ffffff" stroke-width="14"/>
+  <g fill="#ffffff">
+    <path d="M324 332 h44 l-14 -16 a8 8 0 0 1 12 -11 l30 33 a8 8 0 0 1 0 11 l-30 33 a8 8 0 0 1 -12 -11 l14 -16 h-44 a8 8 0 0 1 0 -16 z"/>
+    <path d="M388 380 h-44 l14 16 a8 8 0 0 1 -12 11 l-30 -33 a8 8 0 0 1 0 -11 l30 -33 a8 8 0 0 1 12 11 l-14 16 h44 a8 8 0 0 1 0 16 z" opacity="0"/>
+  </g>
+</svg>
