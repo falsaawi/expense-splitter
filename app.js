@@ -549,8 +549,10 @@
         : '<div class="person__bal txt-bad">' + money(b, trip.currency) + '<small>owes</small></div>';
       return (
         '<div class="person">' +
-          '<div class="avatar" style="background:' + colorFor(p.id) + '">' + esc(initials(p.name)) + '</div>' +
-          '<div class="person__name">' + esc(p.name) + '</div>' +
+          '<div class="person__tap" data-action="edit-person" data-id="' + p.id + '">' +
+            '<div class="avatar" style="background:' + colorFor(p.id) + '">' + esc(initials(p.name)) + '</div>' +
+            '<div class="person__name">' + esc(p.name) + ' <span class="edit-hint">✎</span></div>' +
+          '</div>' +
           status +
           '<button class="iconbtn iconbtn--ghost" data-action="remove-person" data-id="' + p.id + '" aria-label="Remove">🗑️</button>' +
         '</div>'
@@ -563,8 +565,52 @@
         '<button class="btn" data-action="add-person">Add</button>' +
       '</div>' +
       list +
-      (people.length ? '<div class="hint" style="text-align:center;margin-top:16px">Tip: only people ticked as “attended” on an expense help pay for it.</div>' : '')
+      (people.length ? '<div class="hint" style="text-align:center;margin-top:16px">Tap a name to rename — use the same spelling as in other cities to link the same person across trips.</div>' : '')
     );
+  }
+
+  // Rename a person; suggests names from other trips so the same person can be
+  // linked across cities (the overall analysis groups people by name).
+  function personEditSheet(trip, person) {
+    var seen = {}, suggestions = [];
+    state.trips.forEach(function (t) {
+      if (t.id === trip.id) return;
+      (t.people || []).forEach(function (p) {
+        var k = (p.name || "").trim().toLowerCase();
+        if (!k || seen[k]) return;
+        var dup = (trip.people || []).some(function (x) { return x.id !== person.id && (x.name || "").trim().toLowerCase() === k; });
+        if (dup) return;
+        seen[k] = 1; suggestions.push((p.name || "").trim());
+      });
+    });
+    var sugHTML = suggestions.length
+      ? '<div class="field"><label>Link to someone from another trip</label>' +
+          '<div class="chips" id="nameSug">' + suggestions.map(function (n) {
+            return '<button type="button" class="chip" data-name="' + esc(n) + '"><span class="dot" style="background:' + colorFor(n.toLowerCase()) + '">' + esc(initials(n)) + '</span>' + esc(n) + '</button>';
+          }).join("") + '</div>' +
+          '<div class="hint">Pick a name to copy its exact spelling, so they count as one person across cities.</div></div>'
+      : '';
+    var body = '<form id="personForm">' +
+      '<div class="field"><label>Name</label><input id="pname" type="text" value="' + esc(person.name) + '" autocomplete="off" required /></div>' +
+      sugHTML +
+      '<button type="submit" class="btn btn--block btn--lg">Save name</button>' +
+      '</form>';
+    openSheet("Edit person", body, function (sheet) {
+      var sug = sheet.querySelector("#nameSug");
+      if (sug) sug.addEventListener("click", function (ev) {
+        var b = ev.target.closest("[data-name]"); if (!b) return;
+        sheet.querySelector("#pname").value = b.getAttribute("data-name");
+      });
+      sheet.querySelector("#personForm").addEventListener("submit", function (ev) {
+        ev.preventDefault();
+        var name = sheet.querySelector("#pname").value.trim();
+        if (!name) { toast("Enter a name", "bad"); return; }
+        person.name = name;
+        push("addPerson", { tripId: trip.id, person: { id: person.id, name: name } });
+        save(); closeSheet(); render(); toast("Name updated", "good");
+      });
+      setTimeout(function () { var el = sheet.querySelector("#pname"); if (el) { el.focus(); el.select(); } }, 300);
+    });
   }
 
   /* ---------- Tab: Balances ---------- */
@@ -1237,6 +1283,9 @@
         if (trip) { var e = trip.expenses.filter(function (x) { return x.id === id; })[0]; if (e) expenseDetailSheet(trip, e); }
         break;
       case "add-person": addPersonFromInput(); break;
+      case "edit-person":
+        if (trip) { var per = (trip.people || []).filter(function (x) { return x.id === id; })[0]; if (per) personEditSheet(trip, per); }
+        break;
       case "focus-add-person":
         view.tab = "people"; render();
         setTimeout(function () { var i = document.getElementById("newPerson"); if (i) i.focus(); }, 60);
