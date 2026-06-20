@@ -18,9 +18,12 @@
   ];
   var CITY_EMOJIS = ["🏙️","🌆","🗼","🏝️","⛩️","🕌","🏰","🌃","🌅","🗽","🏖️","⛰️","🌉","🎡"];
   var AVATAR_COLORS = ["#6366f1","#ec4899","#f59e0b","#10b981","#3b82f6","#8b5cf6","#ef4444","#14b8a6","#f97316","#0ea5e9"];
+  // Default exchange rates → Saudi Riyal (SAR per 1 unit of currency). Editable in-app.
+  var SAR_RATES = { SAR: 1, USD: 3.75, EUR: 4.05, GBP: 4.70, AED: 1.02, JPY: 0.025, CHF: 4.20, TRY: 0.11, THB: 0.105, AUD: 2.45, CAD: 2.75, SEK: 0.36, INR: 0.045, MXN: 0.20, ZAR: 0.20 };
 
   /* ---------- State ---------- */
   var state = load();
+  if (!state.rates || typeof state.rates !== "object") state.rates = {};
   var view = { name: "trips", tripId: null, tab: "expenses" };
 
   /* ---------- Persistence ---------- */
@@ -671,6 +674,62 @@
     return out;
   }
 
+  function rateFor(cur) {
+    if (state.rates && typeof state.rates[cur] === "number" && state.rates[cur] > 0) return state.rates[cur];
+    return SAR_RATES[cur] || 1;
+  }
+
+  // Convert every trip to SAR and roll everyone up into one combined settlement.
+  function computeOverallSAR() {
+    var people = {};
+    state.trips.forEach(function (trip) {
+      var rate = rateFor(trip.currency || "EUR");
+      var st = computeStats(trip);
+      (trip.people || []).forEach(function (p) {
+        var key = (p.name || "").trim().toLowerCase(); if (!key) return;
+        if (!people[key]) people[key] = { name: (p.name || "").trim(), net: 0, paid: 0, share: 0 };
+        people[key].net += (st.net[p.id] || 0) * rate;
+        people[key].paid += (st.paid[p.id] || 0) * rate;
+        people[key].share += (st.share[p.id] || 0) * rate;
+      });
+    });
+    var bal = {};
+    Object.keys(people).forEach(function (k) {
+      people[k].net = Math.round(people[k].net * 100) / 100;
+      people[k].paid = Math.round(people[k].paid * 100) / 100;
+      people[k].share = Math.round(people[k].share * 100) / 100;
+      bal[k] = people[k].net;
+    });
+    var rows = Object.keys(people).map(function (k) { return people[k]; }).sort(function (a, b) { return b.net - a.net; });
+    var total = rows.reduce(function (s, r) { return s + (r.paid || 0); }, 0);
+    return { settle: settle(bal), rows: rows, nameByKey: people, total: Math.round(total * 100) / 100 };
+  }
+
+  // Sheet to edit exchange rates (SAR per 1 unit) for the currencies in use.
+  function ratesSheet() {
+    var curs = {}; state.trips.forEach(function (t) { curs[t.currency || "EUR"] = 1; });
+    var list = Object.keys(curs).filter(function (c) { return c !== "SAR"; });
+    if (!list.length) { toast("All trips are already in SAR — nothing to convert"); return; }
+    var rows = list.map(function (c) {
+      return '<div class="field"><label>1 ' + esc(c) + ' &nbsp;=&nbsp; ? SAR</label>' +
+        '<input type="number" step="0.0001" min="0" inputmode="decimal" data-cur="' + esc(c) + '" value="' + rateFor(c) + '" /></div>';
+    }).join("");
+    var body = '<form id="ratesForm">' + rows +
+      '<button type="submit" class="btn btn--block btn--lg">Save rates</button>' +
+      '<div class="hint" style="text-align:center;margin-top:10px">Used to convert every trip into Saudi Riyal in the overall analysis.</div></form>';
+    openSheet("Exchange rates → SAR", body, function (sheet) {
+      sheet.querySelector("#ratesForm").addEventListener("submit", function (ev) {
+        ev.preventDefault();
+        if (!state.rates) state.rates = {};
+        sheet.querySelectorAll("input[data-cur]").forEach(function (inp) {
+          var v = parseFloat(inp.value);
+          if (v > 0) state.rates[inp.getAttribute("data-cur")] = v;
+        });
+        save(); closeSheet(); render(); toast("Rates updated", "good");
+      });
+    });
+  }
+
   function renderOverall() {
     var groups = computeOverall();
     var nTrips = state.trips.length;
@@ -716,6 +775,55 @@
       }).join('<hr class="divider" style="margin:22px 0">');
     }
 
+    // Combined "everything in SAR" rollup — the headline of the analysis.
+    var sarSection = "";
+    if (groups.length) {
+      var sar = computeOverallSAR();
+      var sarSettle = !sar.settle.length
+        ? '<div class="card" style="text-align:center;padding:20px"><div style="font-size:30px">🎉</div><div style="font-weight:700;margin-top:6px">Everyone is settled up</div></div>'
+        : '<div class="stack">' + sar.settle.map(function (t) {
+            return '<div class="settle">' +
+              '<div class="avatar" style="background:' + colorFor(t.from) + '">' + esc(initials(sar.nameByKey[t.from].name)) + '</div>' +
+              '<div class="settle__names"><b>' + esc(sar.nameByKey[t.from].name) + '</b> <span class="settle__arrow">→</span> <b>' + esc(sar.nameByKey[t.to].name) + '</b></div>' +
+              '<div class="settle__amt">' + money(t.amount, "SAR") + '</div>' +
+            '</div>';
+          }).join("") + '</div>';
+      var sarRows = '<div class="stack">' + sar.rows.map(function (r) {
+        var cls = Math.abs(r.net) < 0.005 ? "" : r.net > 0 ? "txt-good" : "txt-bad";
+        var label = Math.abs(r.net) < 0.005 ? "settled" : r.net > 0 ? "+" + money(r.net, "SAR") : money(r.net, "SAR");
+        var sub = Math.abs(r.net) < 0.005 ? "all square" : r.net > 0 ? "gets back" : "owes";
+        return '<div class="person analysis"><div class="avatar" style="background:' + colorFor(r.name.toLowerCase()) + '">' + esc(initials(r.name)) + '</div>' +
+          '<div class="person__body"><div class="person__name">' + esc(r.name) + '</div>' +
+          '<div class="analysis__sub">paid <b>' + money(r.paid, "SAR") + '</b> · share <b>' + money(r.share, "SAR") + '</b></div></div>' +
+          '<div class="person__bal ' + cls + '">' + label + '<small>' + sub + '</small></div></div>';
+      }).join("") + '</div>';
+      sarSection =
+        '<div class="summary">' +
+          '<div class="summary__label">Combined · all trips in Saudi Riyal</div>' +
+          '<div class="summary__total">' + money(sar.total, "SAR") + '</div>' +
+          '<div class="summary__grid">' +
+            '<div class="summary__stat"><b>' + sar.rows.length + '</b><span>people</span></div>' +
+            '<div class="summary__stat"><b>' + nTrips + '</b><span>trips</span></div>' +
+            '<div class="summary__stat"><b>' + sar.settle.length + '</b><span>payments</span></div>' +
+          '</div>' +
+        '</div>' +
+        '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin:0 4px 10px">' +
+          '<div class="section-title" style="margin:0">Who pays whom · SAR</div>' +
+          '<button class="linkbtn" data-action="edit-rates">Edit rates</button>' +
+        '</div>' +
+        sarSettle +
+        '<div class="section-title" style="margin-top:18px">Each person · SAR</div>' +
+        sarRows;
+    }
+
+    var content = (!nTrips || !groups.length)
+      ? inner
+      : ('<div class="muted-note" style="margin:-2px 0 14px">People are matched by name. Foreign currencies are converted to SAR at your set rates.</div>' +
+         sarSection +
+         '<hr class="divider" style="margin:24px 0 16px">' +
+         '<div class="section-title">Per-currency breakdown</div>' +
+         inner);
+
     return (
       '<div class="app">' +
         '<header class="appbar">' +
@@ -727,10 +835,7 @@
             '</div>' +
           '</div>' +
         '</header>' +
-        '<main class="content">' +
-          (groups.length ? '<div class="muted-note" style="margin:-2px 0 14px">People are matched by name across trips. Different currencies are settled separately.</div>' : '') +
-          inner +
-        '</main>' +
+        '<main class="content">' + content + '</main>' +
       '</div>'
     );
   }
@@ -1122,6 +1227,7 @@
       case "menu": appMenuSheet(); break;
       case "overall": view = { name: "overall" }; render(); break;
       case "back-home": view = { name: "trips" }; render(); break;
+      case "edit-rates": ratesSheet(); break;
       case "open-trip": view = { name: "trip", tripId: id, tab: "expenses" }; render(); break;
       case "back": view = { name: "trips" }; render(); break;
       case "tab": view.tab = el.getAttribute("data-tab"); render(); break;
