@@ -125,22 +125,31 @@
   }
   function stopPolling() { if (poller) { clearInterval(poller); poller = null; } }
 
-  // Build + share a join link for a trip.
+  // Build + share a join link for a trip — only after it's confirmed in the cloud.
   function shareTrip(trip) {
     ensureCode(trip);
-    push("saveTripFull", { trip: trip }); // make sure it's on the server before sharing
     save();
     var link = location.origin + location.pathname + "?join=" + trip.code;
-    if (navigator.share) {
-      navigator.share({ title: "TripSplit — " + trip.name, text: "Join our trip on TripSplit", url: link }).catch(function () {});
-    } else if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(link).then(
-        function () { toast("Share link copied — send it to your group", "good"); },
-        function () { window.prompt("Copy this trip link:", link); }
-      );
-    } else {
-      window.prompt("Copy this trip link:", link);
+    function reveal() {
+      if (navigator.share) {
+        navigator.share({ title: "TripSplit — " + trip.name, text: "Join our trip on TripSplit", url: link }).catch(function () {});
+      } else if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(link).then(
+          function () { toast("Share link copied — send it to your group", "good"); },
+          function () { window.prompt("Copy this trip link:", link); }
+        );
+      } else {
+        window.prompt("Copy this trip link:", link);
+      }
     }
+    toast("Syncing trip to the cloud…");
+    // Push the whole trip (people + expenses) and only share once it lands.
+    api("saveTripFull", { trip: trip }).then(function () {
+      cloud.ok = true; cloud.warned = false;
+      reveal();
+    }).catch(function () {
+      toast("Couldn't sync this trip — check your connection, then tap Share again", "bad");
+    });
   }
 
   // Boot: join via ?join=CODE if present, then sync from the cloud.
