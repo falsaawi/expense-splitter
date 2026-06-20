@@ -1,6 +1,7 @@
 /* ============================================================
    TripSplit — share travel costs among whoever attended.
-   Pure vanilla JS, no dependencies. Data lives in localStorage.
+   Vanilla JS frontend. Local-first cache + shared cloud sync
+   via the /api/data endpoint (Neon Postgres on Vercel).
    ============================================================ */
 
 (function () {
@@ -36,6 +37,134 @@
     } catch (e) {
       toast("Storage is full — try removing some invoice photos.", "bad");
     }
+  }
+
+  /* ---------- Cloud sync (shared trips via the Neon-backed API) ----------
+     Local cache stays the source of truth for instant UI + offline use;
+     every change is also pushed to the cloud so the whole group shares it. */
+  var API_URL = "/api/data";
+  var cloud = { ok: false, checked: false, warned: false };
+  var poller = null;
+
+  function api(op, payload) {
+    return fetch(API_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(Object.assign({ op: op }, payload || {}))
+    }).then(function (r) {
+      if (!r.ok) {
+        return r.json().then(
+          function (j) { throw new Error((j && j.error) || ("HTTP " + r.status)); },
+          function () { throw new Error("HTTP " + r.status); }
+        );
+      }
+      return r.json();
+    });
+  }
+
+  // Fire-and-forget cloud write (local cache already updated + rendered).
+  function push(op, payload) {
+    api(op, payload).then(function () {
+      cloud.ok = true; cloud.warned = false;
+    }).catch(function () {
+      cloud.ok = false;
+      if (!cloud.warned) { cloud.warned = true; toast("Working offline — changes sync when you reconnect", ""); }
+    });
+  }
+
+  function shortCode() {
+    var s = "", chars = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"; // no ambiguous chars
+    for (var i = 0; i < 7; i++) s += chars[Math.floor(Math.random() * chars.length)];
+    return s;
+  }
+  function ensureCode(trip) { if (!trip.code) trip.code = shortCode(); return trip.code; }
+
+  function mergeTrip(serverTrip) {
+    for (var i = 0; i < state.trips.length; i++) {
+      if (state.trips[i].id === serverTrip.id) { state.trips[i] = serverTrip; return; }
+    }
+    state.trips.push(serverTrip);
+  }
+
+  // Pull one trip from the cloud; merge if changed. cb(changed, trip).
+  function pullTrip(q, cb) {
+    api("getTrip", q.code ? { code: q.code } : { id: q.id }).then(function (res) {
+      if (!res.trip) { if (cb) cb(false, null); return; }
+      var existing = getTrip(res.trip.id);
+      var changed = !existing || JSON.stringify(existing) !== JSON.stringify(res.trip);
+      if (changed) { mergeTrip(res.trip); save(); }
+      if (cb) cb(changed, res.trip);
+    }).catch(function () { if (cb) cb(false, null); });
+  }
+
+  // Refresh all known trips from the cloud; migrate any local-only trips up.
+  function refreshAll(cb) {
+    var ids = state.trips.map(function (t) { return t.id; });
+    if (!ids.length) { cloud.checked = true; if (cb) cb(); return; }
+    api("getTrips", { ids: ids }).then(function (res) {
+      cloud.ok = true; cloud.checked = true;
+      var have = {};
+      (res.trips || []).forEach(function (t) { have[t.id] = true; });
+      // push local trips the server doesn't know yet (e.g. created before sync)
+      state.trips.forEach(function (t) {
+        if (!have[t.id]) { ensureCode(t); push("saveTripFull", { trip: t }); }
+      });
+      (res.trips || []).forEach(function (t) { mergeTrip(t); });
+      save();
+      if (cb) cb();
+    }).catch(function () { cloud.checked = true; if (cb) cb(); });
+  }
+
+  function startPolling() {
+    stopPolling();
+    poller = setInterval(function () {
+      if (view.name === "trip" && view.tripId && !document.querySelector(".sheet")) {
+        pullTrip({ id: view.tripId }, function (changed) { if (changed) render(); });
+      }
+    }, 12000);
+  }
+  function stopPolling() { if (poller) { clearInterval(poller); poller = null; } }
+
+  // Build + share a join link for a trip.
+  function shareTrip(trip) {
+    ensureCode(trip);
+    push("saveTripFull", { trip: trip }); // make sure it's on the server before sharing
+    save();
+    var link = location.origin + location.pathname + "?join=" + trip.code;
+    if (navigator.share) {
+      navigator.share({ title: "TripSplit — " + trip.name, text: "Join our trip on TripSplit", url: link }).catch(function () {});
+    } else if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(link).then(
+        function () { toast("Share link copied — send it to your group", "good"); },
+        function () { window.prompt("Copy this trip link:", link); }
+      );
+    } else {
+      window.prompt("Copy this trip link:", link);
+    }
+  }
+
+  // Boot: join via ?join=CODE if present, then sync from the cloud.
+  function boot() {
+    render();
+    var joinCode = null;
+    try { joinCode = new URLSearchParams(location.search).get("join"); } catch (e) {}
+    if (joinCode) {
+      try { history.replaceState(null, "", location.pathname); } catch (e) {}
+      api("getTrip", { code: joinCode }).then(function (res) {
+        if (res.trip) {
+          mergeTrip(res.trip); save();
+          view = { name: "trip", tripId: res.trip.id, tab: "expenses" };
+          render();
+          toast("Joined “" + res.trip.name + "” 🎉", "good");
+        } else {
+          toast("That trip link wasn't found", "bad");
+        }
+        refreshAll(function () { render(); });
+      }).catch(function () { toast("Couldn't load the shared trip (offline?)", "bad"); });
+    } else {
+      refreshAll(function () { render(); });
+    }
+    startPolling();
   }
 
   /* ---------- Utilities ---------- */
@@ -508,10 +637,12 @@
         state.lastCurrency = currency;
         if (existing) {
           existing.name = name; existing.currency = currency; existing.emoji = chosen;
+          push("updateTrip", { id: existing.id, name: name, currency: currency, emoji: chosen });
           toast("Trip updated", "good");
         } else {
-          var nt = { id: uid(), name: name, currency: currency, emoji: chosen, createdAt: Date.now(), people: [], expenses: [] };
+          var nt = { id: uid(), code: shortCode(), name: name, currency: currency, emoji: chosen, createdAt: Date.now(), people: [], expenses: [] };
           state.trips.push(nt);
+          push("saveTripFull", { trip: nt });
           view = { name: "trip", tripId: nt.id, tab: "people" };
           toast("Trip created — add people next 👇", "good");
         }
@@ -649,6 +780,7 @@
         sheet.querySelector("#delExp").addEventListener("click", function () {
           if (!confirm("Delete this expense?")) return;
           trip.expenses = trip.expenses.filter(function (x) { return x.id !== existing.id; });
+          push("deleteExpense", { tripId: trip.id, expenseId: existing.id });
           save(); closeSheet(); render(); toast("Expense deleted");
         });
       }
@@ -668,10 +800,12 @@
         };
         if (existing) {
           Object.keys(payload).forEach(function (k) { existing[k] = payload[k]; });
+          push("saveExpense", { tripId: trip.id, expense: existing });
           toast("Expense saved", "good");
         } else {
           payload.id = uid(); payload.createdAt = Date.now();
           trip.expenses.push(payload);
+          push("saveExpense", { tripId: trip.id, expense: payload });
           toast("Expense added", "good");
         }
         save(); closeSheet(); render();
@@ -718,15 +852,19 @@
   /* ---------- Trip options menu ---------- */
   function tripMenuSheet(trip) {
     var body =
+      '<button class="btn btn--block btn--lg" data-m="share" style="margin-bottom:12px">🔗 Share trip with the group</button>' +
+      '<div class="hint" style="text-align:center;margin:-4px 0 16px">Anyone who opens the link joins this trip and sees the same expenses, live.</div>' +
       '<button class="btn btn--block btn--soft" data-m="edit" style="margin-bottom:10px">✏️ Edit trip name / currency</button>' +
       '<button class="btn btn--block btn--soft" data-m="export" style="margin-bottom:10px">⬇️ Export backup (JSON)</button>' +
       '<button class="btn btn--block btn--danger" data-m="delete">🗑️ Delete this trip</button>';
     openSheet(trip.name, body, function (sheet) {
+      sheet.querySelector('[data-m="share"]').addEventListener("click", function () { closeSheet(); shareTrip(trip); });
       sheet.querySelector('[data-m="edit"]').addEventListener("click", function () { closeSheet(true); tripFormSheet(trip); });
       sheet.querySelector('[data-m="export"]').addEventListener("click", function () { closeSheet(); exportData(trip); });
       sheet.querySelector('[data-m="delete"]').addEventListener("click", function () {
         if (!confirm('Delete "' + trip.name + '" and all its expenses?')) return;
         state.trips = state.trips.filter(function (t) { return t.id !== trip.id; });
+        push("deleteTrip", { id: trip.id });
         save(); view = { name: "trips" }; closeSheet(); render(); toast("Trip deleted");
       });
     });
@@ -739,7 +877,7 @@
       '<label class="btn btn--block btn--soft" for="importInput" style="margin-bottom:10px">⬆️ Import backup</label>' +
       '<input id="importInput" type="file" accept="application/json,.json" class="hidden" />' +
       '<button class="btn btn--block btn--soft" data-m="demo">✨ Load a sample trip</button>' +
-      '<div class="hint" style="text-align:center;margin-top:14px">All data stays on this device, in your browser. Export regularly to back it up.</div>';
+      '<div class="hint" style="text-align:center;margin-top:14px">Trips sync to the cloud so your whole group shares them. Export is a personal backup.</div>';
     openSheet("TripSplit", body, function (sheet) {
       sheet.querySelector('[data-m="export"]').addEventListener("click", function () { closeSheet(); exportData(null); });
       sheet.querySelector('[data-m="demo"]').addEventListener("click", function () { closeSheet(); seedDemo(); });
@@ -750,7 +888,9 @@
           try {
             var data = JSON.parse(r.result);
             if (!data || !Array.isArray(data.trips)) throw new Error("bad");
-            state = data; save(); closeSheet(); view = { name: "trips" }; render(); toast("Backup imported", "good");
+            state = data;
+            state.trips.forEach(function (t) { ensureCode(t); push("saveTripFull", { trip: t }); });
+            save(); closeSheet(); view = { name: "trips" }; render(); toast("Backup imported", "good");
           } catch (e) { toast("That file isn't a valid backup", "bad"); }
         };
         r.readAsText(f);
@@ -775,7 +915,7 @@
     var pid = function () { return uid(); };
     var a = pid(), b = pid(), c = pid(), d = pid();
     var trip = {
-      id: uid(), name: "Barcelona", currency: "EUR", emoji: "🌆", createdAt: Date.now(),
+      id: uid(), code: shortCode(), name: "Barcelona", currency: "EUR", emoji: "🌆", createdAt: Date.now(),
       people: [
         { id: a, name: "Omar" }, { id: b, name: "Sara" },
         { id: c, name: "Liam" }, { id: d, name: "Nadia" }
@@ -791,6 +931,7 @@
     };
     state.trips.push(trip);
     state.lastCurrency = "EUR";
+    push("saveTripFull", { trip: trip });
     save();
     view = { name: "trip", tripId: trip.id, tab: "expenses" };
     render();
@@ -811,7 +952,9 @@
     if (!input) return;
     var name = input.value.trim();
     if (!name) { input.focus(); return; }
-    trip.people.push({ id: uid(), name: name });
+    var person = { id: uid(), name: name };
+    trip.people.push(person);
+    push("addPerson", { tripId: trip.id, person: person });
     save();
     render();
     // re-focus the (re-rendered) input for fast multi-add
@@ -853,6 +996,7 @@
           if (confirm(msg)) {
             trip.people = trip.people.filter(function (p) { return p.id !== id; });
             trip.expenses.forEach(function (x) { x.attendees = (x.attendees || []).filter(function (pid) { return pid !== id; }); });
+            push("removePerson", { tripId: trip.id, personId: id });
             save(); render();
           }
         }
@@ -886,7 +1030,7 @@
   }
 
   /* ---------- Boot ---------- */
-  render();
+  boot();
 
   // expose a tiny hook for the preview/demo tooling
   window.__tripsplit = { seedDemo: seedDemo, state: function () { return state; }, render: render, go: function (v) { view = v; render(); } };

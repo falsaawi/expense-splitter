@@ -7,8 +7,10 @@ night someone picks up the dinner bill, and the cost should be split **only amon
 people who actually attended**. TripSplit makes that effortless: snap the invoice, tap
 who paid and who was there, and it tells everyone who owes whom.
 
-No accounts, no servers, no fees. It's a single installable web app — your data stays
-on your phone.
+It's an installable web app with a **shared cloud backend**: create a trip, tap
+**Share**, and everyone who opens the link sees and edits the *same* trip — expenses,
+photos and balances stay in sync. No login required to join. Works offline too: changes
+are cached on your device and sync when you reconnect.
 
 ---
 
@@ -91,12 +93,22 @@ expense pay nothing toward it.
 
 ---
 
-## 🔒 Privacy & storage
+## 🔗 Sharing & sync
 
-- Everything is stored locally in your browser (`localStorage`) — nothing is uploaded.
-- Invoice photos are automatically resized/compressed to save space.
-- Browser local storage is limited (~5 MB). For long trips with many photos, **export a
-  backup** now and then. Clearing your browser data will erase trips, so keep exports.
+- Each trip has a private **share code**. Tap **Share trip** to copy a join link
+  (`…/?join=CODE`); anyone who opens it joins the same trip — no account needed.
+- Trips, expenses, attendees and invoice photos live in a **Neon Postgres** database
+  (via a Vercel serverless function at `/api/data`), so the whole group stays in sync.
+- **Local-first:** every change updates instantly on your device and is mirrored to the
+  cloud. Offline, changes are kept locally and sync when you reconnect; open trips also
+  refresh automatically every few seconds so you see others' updates.
+
+## 🔧 Backend setup (Vercel + Neon)
+
+1. In your Vercel project, add a **Neon Postgres** database (Storage tab). Vercel injects
+   a connection string (`DATABASE_URL` / `POSTGRES_URL`) into the project automatically.
+2. Deploy. The `/api/data` function creates its tables on first request — no migrations
+   to run. Photos are stored as compressed data URLs in Postgres.
 
 ---
 
@@ -106,7 +118,9 @@ expense pay nothing toward it.
 |------|---------|
 | `index.html` | App shell |
 | `styles.css` | All styles (mobile-first) |
-| `app.js` | App logic: state, views, splitting math, photos |
+| `app.js` | Frontend: views, splitting math, local cache + cloud sync + sharing |
+| `api/data.js` | Serverless backend (Neon Postgres): one endpoint, all data ops |
+| `package.json` | Declares the `@neondatabase/serverless` dependency |
 | `manifest.webmanifest` | PWA metadata (installable) |
 | `sw.js` | Service worker (offline caching) |
 | `icon.svg` | App icon |

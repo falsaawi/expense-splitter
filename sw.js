@@ -1,5 +1,5 @@
 /* TripSplit service worker — offline-first caching of the app shell. */
-var CACHE = "tripsplit-v1";
+var CACHE = "tripsplit-v2";
 var ASSETS = [
   "./",
   "./index.html",
