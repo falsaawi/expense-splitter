@@ -1,5 +1,5 @@
 /* TripSplit service worker — offline-first caching of the app shell. */
-var CACHE = "tripsplit-v2";
+var CACHE = "tripsplit-v3";
 var ASSETS = [
   "./",
   "./index.html",
@@ -23,20 +23,22 @@ self.addEventListener("activate", function (e) {
 
 self.addEventListener("fetch", function (e) {
   if (e.request.method !== "GET") return;
+  var url;
+  try { url = new URL(e.request.url); } catch (err) { return; }
+  if (url.origin !== self.location.origin) return; // ignore cross-origin
+  if (url.pathname.indexOf("/api/") === 0) return;  // never cache the API
+
+  // Network-first: always load the freshest app code when online so sync
+  // logic can't be broken by a stale cached bundle; fall back to cache offline.
   e.respondWith(
-    caches.match(e.request).then(function (cached) {
-      if (cached) return cached;
-      return fetch(e.request).then(function (resp) {
-        // runtime-cache same-origin GETs
-        try {
-          var url = new URL(e.request.url);
-          if (url.origin === self.location.origin) {
-            var copy = resp.clone();
-            caches.open(CACHE).then(function (c) { c.put(e.request, copy); });
-          }
-        } catch (err) {}
-        return resp;
-      }).catch(function () { return caches.match("./index.html"); });
+    fetch(e.request).then(function (resp) {
+      var copy = resp.clone();
+      caches.open(CACHE).then(function (c) { c.put(e.request, copy); });
+      return resp;
+    }).catch(function () {
+      return caches.match(e.request).then(function (cached) {
+        return cached || caches.match("./index.html");
+      });
     })
   );
 });
