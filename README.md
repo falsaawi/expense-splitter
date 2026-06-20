@@ -44,10 +44,22 @@ python3 -m http.server 8080
 (Using a server rather than opening the file directly lets the camera, install prompt,
 and offline mode work properly.)
 
-**Option B — host free on GitHub Pages**
-1. Push this repo to GitHub.
-2. Settings → Pages → Deploy from branch → pick your branch, root folder.
-3. Open the published URL on your phone and **"Add to Home Screen"** to install it.
+**Option B — deploy free on Vercel** (recommended)
+1. Go to [vercel.com/new](https://vercel.com/new) and import **`falsaawi/expense-splitter`**.
+2. It's a static site — leave **Framework: Other**, no build command. Click **Deploy**.
+3. Open the `*.vercel.app` URL on your phone and **"Add to Home Screen"** to install it.
+4. Every push redeploys; pull requests get their own **preview URL** automatically.
+
+A `vercel.json` is included with PWA-friendly headers (no-cache for the service
+worker so updates always reach users).
+
+**Option C — host free on GitHub Pages**
+1. Settings → Pages → Deploy from branch → pick your branch, root folder.
+2. Open the published URL on your phone and **"Add to Home Screen"** to install it.
+
+> When you share the deployed link in a chat, it unfurls with a preview card
+> (`og-image.png`). For Twitter/Facebook, set the `og:image`/`twitter:image` URLs in
+> `index.html` to your absolute deployed URL.
 
 ---
 
