@@ -697,8 +697,10 @@
         return '<div class="photo-preview"><img src="' + draftPhoto + '" alt="invoice" id="photoImg">' +
           '<button type="button" class="photo-preview__remove" id="photoRemove" aria-label="Remove photo">✕</button></div>';
       }
-      return '<label class="photo-pick" for="photoInput"><div class="ic">📷</div><b>Add invoice photo</b>' +
-        '<span class="hint">Take a photo or pick from gallery</span></label>';
+      return '<div class="photo-actions">' +
+        '<button type="button" class="photo-btn" id="pickCam"><span class="ic">📷</span>Take photo</button>' +
+        '<button type="button" class="photo-btn" id="pickLib"><span class="ic">🖼️</span>Photo library</button>' +
+        '</div>';
     }
 
     var curOpts = CURRENCIES.map(function (c) {
@@ -724,7 +726,8 @@
         '</div>' +
         '<div class="field"><label>Invoice photo</label>' +
           '<div id="photoBlock">' + photoBlock() + '</div>' +
-          '<input id="photoInput" type="file" accept="image/*" capture="environment" class="hidden" /></div>' +
+          '<input id="photoCam" type="file" accept="image/*" capture="environment" class="hidden" />' +
+          '<input id="photoLib" type="file" accept="image/*" class="hidden" /></div>' +
         '<div class="field"><label>Note (optional)</label>' +
           '<textarea id="e_note" placeholder="Anything to remember…">' + esc(e.note || "") + '</textarea></div>' +
         '<button type="submit" class="btn btn--block btn--lg">' + (existing ? "Save expense" : "Add expense") + '</button>' +
@@ -765,14 +768,7 @@
       });
       sheet.querySelector("#e_amount").addEventListener("input", refreshSplit);
 
-      function bindPhoto() {
-        var rm = sheet.querySelector("#photoRemove");
-        if (rm) rm.addEventListener("click", function () { draftPhoto = null; sheet.querySelector("#photoBlock").innerHTML = photoBlock(); bindPhoto(); });
-        var img = sheet.querySelector("#photoImg");
-        if (img) img.addEventListener("click", function () { openLightbox(draftPhoto); });
-      }
-      sheet.querySelector("#photoInput").addEventListener("change", function () {
-        var f = this.files && this.files[0];
+      function handlePhotoFile(f) {
         if (!f) return;
         toast("Processing photo…");
         fileToCompressedDataURL(f, function (data) {
@@ -781,7 +777,19 @@
           sheet.querySelector("#photoBlock").innerHTML = photoBlock();
           bindPhoto();
         });
-      });
+      }
+      function bindPhoto() {
+        var rm = sheet.querySelector("#photoRemove");
+        if (rm) rm.addEventListener("click", function () { draftPhoto = null; sheet.querySelector("#photoBlock").innerHTML = photoBlock(); bindPhoto(); });
+        var img = sheet.querySelector("#photoImg");
+        if (img) img.addEventListener("click", function () { openLightbox(draftPhoto); });
+        var cam = sheet.querySelector("#pickCam");
+        if (cam) cam.addEventListener("click", function () { sheet.querySelector("#photoCam").click(); });
+        var lib = sheet.querySelector("#pickLib");
+        if (lib) lib.addEventListener("click", function () { sheet.querySelector("#photoLib").click(); });
+      }
+      sheet.querySelector("#photoCam").addEventListener("change", function () { handlePhotoFile(this.files && this.files[0]); });
+      sheet.querySelector("#photoLib").addEventListener("change", function () { handlePhotoFile(this.files && this.files[0]); });
       bindPhoto();
       refreshSplit();
 

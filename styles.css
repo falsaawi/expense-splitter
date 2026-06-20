@@ -235,6 +235,14 @@ h1,h2,h3 { margin: 0; font-weight: 700; letter-spacing: -.01em; }
 }
 .photo-pick .ic { font-size: 30px; }
 .photo-pick b { color: var(--ink); }
+.photo-actions { display: flex; gap: 10px; }
+.photo-btn {
+  flex: 1; border: 2px dashed #cfd2e6; border-radius: 14px; padding: 18px 10px; background: #fff;
+  color: var(--ink); font-weight: 650; font-size: 14px;
+  display: flex; flex-direction: column; align-items: center; gap: 7px;
+}
+.photo-btn .ic { font-size: 27px; }
+.photo-btn:active { background: var(--primary-soft); border-color: var(--primary); transform: scale(.98); }
 .photo-preview { position: relative; border-radius: 14px; overflow: hidden; box-shadow: var(--shadow); }
 .photo-preview img { width: 100%; display: block; max-height: 240px; object-fit: cover; }
 .photo-preview__remove {
