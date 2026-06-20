@@ -244,6 +244,26 @@
     return bal;
   }
 
+  // Per-person breakdown: total paid (fronted) vs share (what they consumed on
+  // expenses they attended). net = paid - share, matching computeBalances.
+  function computeStats(trip) {
+    var paid = {}, share = {}, net = {};
+    (trip.people || []).forEach(function (p) { paid[p.id] = 0; share[p.id] = 0; });
+    (trip.expenses || []).forEach(function (e) {
+      var attendees = (e.attendees || []).filter(function (id) { return paid[id] !== undefined; });
+      if (!attendees.length || !(e.amount > 0)) return;
+      var sh = e.amount / attendees.length;
+      if (paid[e.paidBy] !== undefined) paid[e.paidBy] += e.amount;
+      attendees.forEach(function (id) { share[id] += sh; });
+    });
+    Object.keys(paid).forEach(function (k) {
+      paid[k] = Math.round(paid[k] * 100) / 100;
+      share[k] = Math.round(share[k] * 100) / 100;
+      net[k] = Math.round((paid[k] - share[k]) * 100) / 100;
+    });
+    return { paid: paid, share: share, net: net };
+  }
+
   // Greedy minimal-transaction settlement.
   function settle(bal) {
     var creditors = [], debtors = [];
@@ -301,6 +321,7 @@
   function render() {
     if (view.name === "trips") app.innerHTML = renderTrips();
     else if (view.name === "trip") app.innerHTML = renderTrip();
+    else if (view.name === "overall") app.innerHTML = renderOverall();
     window.scrollTo(0, 0);
   }
 
@@ -374,7 +395,8 @@
           '<div style="margin-top:14px"><button class="linkbtn" data-action="seed-demo">or load a sample trip</button></div>' +
         '</div>';
     } else {
-      body = '<div class="stack">' + trips.map(function (t) {
+      body = '<button class="overall-cta" data-action="overall">📊 Overall settlement across all trips<span class="chev">›</span></button>' +
+        '<div class="stack">' + trips.map(function (t) {
         var ppl = (t.people || []).length, exp = (t.expenses || []).length;
         return (
           '<div class="card trip-card" data-action="open-trip" data-id="' + t.id + '">' +
@@ -568,16 +590,21 @@
       }).join("") + '</div>';
     }
 
-    // per-person summary
+    // detailed per-person analysis: paid vs share vs net
+    var stats = computeStats(trip);
     var balHTML = '<div class="stack">' + people.map(function (p) {
       var b = bal[p.id] || 0;
       var cls = Math.abs(b) < 0.005 ? "" : b > 0 ? "txt-good" : "txt-bad";
       var label = Math.abs(b) < 0.005 ? "settled" : b > 0 ? "+" + money(b, trip.currency) : money(b, trip.currency);
+      var sub = Math.abs(b) < 0.005 ? "all square" : b > 0 ? "gets back" : "owes";
       return (
-        '<div class="person">' +
+        '<div class="person analysis">' +
           '<div class="avatar" style="background:' + colorFor(p.id) + '">' + esc(initials(p.name)) + '</div>' +
-          '<div class="person__name">' + esc(p.name) + '</div>' +
-          '<div class="person__bal ' + cls + '">' + label + '</div>' +
+          '<div class="person__body">' +
+            '<div class="person__name">' + esc(p.name) + '</div>' +
+            '<div class="analysis__sub">paid <b>' + money(stats.paid[p.id] || 0, trip.currency) + '</b> · share <b>' + money(stats.share[p.id] || 0, trip.currency) + '</b></div>' +
+          '</div>' +
+          '<div class="person__bal ' + cls + '">' + label + '<small>' + sub + '</small></div>' +
         '</div>'
       );
     }).join("") + '</div>';
@@ -594,7 +621,7 @@
       '</div>' +
       '<div class="section-title">Who pays whom</div>' +
       settleHTML +
-      '<div class="section-title" style="margin-top:22px">Everyone\'s balance</div>' +
+      '<div class="section-title" style="margin-top:22px">Split analysis · paid vs share</div>' +
       balHTML
     );
   }
@@ -606,6 +633,106 @@
       '<div class="empty__text">' + esc(text) + '</div>' +
       (btnLabel ? '<button class="btn btn--lg" ' + btnAttrs + '>' + esc(btnLabel) + '</button>' : '') +
       '</div>';
+  }
+
+  /* ============================================================
+     SCREEN: Overall settlement across all trips
+     People are matched by name; trips are grouped by currency so different
+     city currencies are never mixed.
+     ============================================================ */
+  function computeOverall() {
+    var groups = {}; // currency -> { nameKey -> {name, net, paid, share, trips} }
+    state.trips.forEach(function (trip) {
+      var cur = trip.currency || "EUR";
+      var st = computeStats(trip);
+      if (!groups[cur]) groups[cur] = {};
+      (trip.people || []).forEach(function (p) {
+        var key = (p.name || "").trim().toLowerCase();
+        if (!key) return;
+        if (!groups[cur][key]) groups[cur][key] = { name: (p.name || "").trim(), net: 0, paid: 0, share: 0, trips: 0 };
+        var g = groups[cur][key];
+        g.net += st.net[p.id] || 0; g.paid += st.paid[p.id] || 0; g.share += st.share[p.id] || 0; g.trips += 1;
+      });
+    });
+    var out = [];
+    Object.keys(groups).forEach(function (cur) {
+      var people = groups[cur], bal = {};
+      Object.keys(people).forEach(function (k) {
+        people[k].net = Math.round(people[k].net * 100) / 100;
+        people[k].paid = Math.round(people[k].paid * 100) / 100;
+        people[k].share = Math.round(people[k].share * 100) / 100;
+        bal[k] = people[k].net;
+      });
+      var rows = Object.keys(people).map(function (k) { return people[k]; }).sort(function (a, b) { return b.net - a.net; });
+      var total = rows.reduce(function (s, r) { return s + (r.paid || 0); }, 0);
+      out.push({ currency: cur, settle: settle(bal), rows: rows, nameByKey: people, total: total });
+    });
+    out.sort(function (a, b) { return b.rows.length - a.rows.length; });
+    return out;
+  }
+
+  function renderOverall() {
+    var groups = computeOverall();
+    var nTrips = state.trips.length;
+    var nameSet = {};
+    state.trips.forEach(function (t) { (t.people || []).forEach(function (p) { var k = (p.name || "").trim().toLowerCase(); if (k) nameSet[k] = 1; }); });
+    var nPeople = Object.keys(nameSet).length;
+
+    var inner;
+    if (!nTrips || !groups.length) {
+      inner = emptyBox("📊", "Nothing to analyze yet", "Add trips with expenses and you'll see one combined settlement for everyone across all of them here.", null, null);
+    } else {
+      inner = groups.map(function (g) {
+        var settleHTML;
+        if (!g.settle.length) {
+          settleHTML = '<div class="card" style="text-align:center;padding:20px"><div style="font-size:30px">🎉</div>' +
+            '<div style="font-weight:700;margin-top:6px">All settled in ' + esc(g.currency) + '</div></div>';
+        } else {
+          settleHTML = '<div class="stack">' + g.settle.map(function (t) {
+            return '<div class="settle">' +
+              '<div class="avatar" style="background:' + colorFor(t.from) + '">' + esc(initials(g.nameByKey[t.from].name)) + '</div>' +
+              '<div class="settle__names"><b>' + esc(g.nameByKey[t.from].name) + '</b> <span class="settle__arrow">→</span> <b>' + esc(g.nameByKey[t.to].name) + '</b></div>' +
+              '<div class="settle__amt">' + money(t.amount, g.currency) + '</div>' +
+            '</div>';
+          }).join("") + '</div>';
+        }
+        var rowsHTML = '<div class="stack">' + g.rows.map(function (r) {
+          var cls = Math.abs(r.net) < 0.005 ? "" : r.net > 0 ? "txt-good" : "txt-bad";
+          var label = Math.abs(r.net) < 0.005 ? "settled" : r.net > 0 ? "+" + money(r.net, g.currency) : money(r.net, g.currency);
+          var sub = Math.abs(r.net) < 0.005 ? "all square" : r.net > 0 ? "gets back" : "owes";
+          return '<div class="person analysis">' +
+            '<div class="avatar" style="background:' + colorFor(r.name.toLowerCase()) + '">' + esc(initials(r.name)) + '</div>' +
+            '<div class="person__body"><div class="person__name">' + esc(r.name) + '</div>' +
+              '<div class="analysis__sub">paid <b>' + money(r.paid, g.currency) + '</b> · share <b>' + money(r.share, g.currency) + '</b> · ' + r.trips + (r.trips === 1 ? " trip" : " trips") + '</div></div>' +
+            '<div class="person__bal ' + cls + '">' + label + '<small>' + sub + '</small></div>' +
+          '</div>';
+        }).join("") + '</div>';
+        return '<div class="cur-group">' +
+          '<div class="cur-head"><span class="cur-badge">' + esc(g.currency) + '</span>' +
+            '<span class="cur-total">' + money(g.total, g.currency) + ' · ' + g.rows.length + (g.rows.length === 1 ? " person" : " people") + '</span></div>' +
+          '<div class="section-title">Who pays whom</div>' + settleHTML +
+          '<div class="section-title" style="margin-top:18px">Each person</div>' + rowsHTML +
+        '</div>';
+      }).join('<hr class="divider" style="margin:22px 0">');
+    }
+
+    return (
+      '<div class="app">' +
+        '<header class="appbar">' +
+          '<div class="appbar__row">' +
+            '<button class="iconbtn" data-action="back-home" aria-label="Back">‹</button>' +
+            '<div style="min-width:0">' +
+              '<div class="appbar__title"><span style="flex:none">📊</span><span class="ttl">Overall settlement</span></div>' +
+              '<div class="appbar__sub">Across ' + nTrips + (nTrips === 1 ? " trip" : " trips") + ' · ' + nPeople + (nPeople === 1 ? " person" : " people") + '</div>' +
+            '</div>' +
+          '</div>' +
+        '</header>' +
+        '<main class="content">' +
+          (groups.length ? '<div class="muted-note" style="margin:-2px 0 14px">People are matched by name across trips. Different currencies are settled separately.</div>' : '') +
+          inner +
+        '</main>' +
+      '</div>'
+    );
   }
 
   /* ============================================================
@@ -993,6 +1120,8 @@
       case "new-trip": tripFormSheet(null); break;
       case "seed-demo": seedDemo(); break;
       case "menu": appMenuSheet(); break;
+      case "overall": view = { name: "overall" }; render(); break;
+      case "back-home": view = { name: "trips" }; render(); break;
       case "open-trip": view = { name: "trip", tripId: id, tab: "expenses" }; render(); break;
       case "back": view = { name: "trips" }; render(); break;
       case "tab": view.tab = el.getAttribute("data-tab"); render(); break;
@@ -1036,7 +1165,7 @@
   // Browser back button closes sheets / navigates between views
   window.addEventListener("popstate", function () {
     if (document.querySelector(".sheet")) { closeSheet(); return; }
-    if (view.name === "trip") { view = { name: "trips" }; render(); }
+    if (view.name === "trip" || view.name === "overall") { view = { name: "trips" }; render(); }
   });
 
   /* ---------- Service worker (offline) ---------- */
