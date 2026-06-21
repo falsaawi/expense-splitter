@@ -171,6 +171,7 @@ h1,h2,h3 { margin: 0; font-weight: 700; letter-spacing: -.01em; }
 .person__tap { display: flex; align-items: center; gap: 12px; flex: 1; min-width: 0; }
 .person__tap:active { opacity: .55; }
 .edit-hint { color: var(--muted); font-size: 12px; opacity: .55; margin-left: 2px; }
+.fraud-flag { font-size: .9em; margin-left: 2px; cursor: help; vertical-align: baseline; }
 .avatar { width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center; color: #fff; font-weight: 700; font-size: 15px; flex: none; }
 .person__name { flex: 1; font-weight: 600; }
 .person__bal { font-weight: 700; font-size: 14px; text-align: right; }
