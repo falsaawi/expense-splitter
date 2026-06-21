@@ -45,6 +45,7 @@ async function ensureSchema() {
   )`;
   await sql`CREATE INDEX IF NOT EXISTS idx_people_trip ON people(trip_id)`;
   await sql`CREATE INDEX IF NOT EXISTS idx_expenses_trip ON expenses(trip_id)`;
+  await sql`CREATE TABLE IF NOT EXISTS deleted_trips (id TEXT PRIMARY KEY, deleted_at BIGINT)`;
   schemaReady = true;
 }
 
@@ -140,7 +141,15 @@ export default async function handler(req, res) {
           const t = await getTripById(id);
           if (t) trips.push(t);
         }
-        return res.status(200).json({ trips });
+        // tell the client which requested trips were deleted, so it can prune them
+        let deleted = [];
+        if (ids.length) {
+          const delRows = await sql`SELECT id FROM deleted_trips`;
+          const delSet = {};
+          delRows.forEach((r) => { delSet[r.id] = true; });
+          deleted = ids.filter((id) => delSet[id]);
+        }
+        return res.status(200).json({ trips, deleted });
       }
 
       case "getTrip": {
@@ -152,6 +161,9 @@ export default async function handler(req, res) {
         // upsert a whole trip incl. people + expenses (create / migrate / re-sync)
         const t = body.trip;
         if (!t || !t.id || !t.code) return res.status(400).json({ error: "trip with id+code required" });
+        // never resurrect a trip that was deleted
+        const tomb = await sql`SELECT 1 FROM deleted_trips WHERE id = ${t.id}`;
+        if (tomb.length) return res.status(200).json({ ok: true, skipped: "deleted" });
         await upsertTripRow(t);
         for (const p of t.people || []) await upsertPerson(t.id, p);
         for (const e of t.expenses || []) await upsertExpense(t.id, e);
@@ -167,6 +179,7 @@ export default async function handler(req, res) {
         await sql`DELETE FROM expenses WHERE trip_id = ${body.id}`;
         await sql`DELETE FROM people WHERE trip_id = ${body.id}`;
         await sql`DELETE FROM trips WHERE id = ${body.id}`;
+        await sql`INSERT INTO deleted_trips (id, deleted_at) VALUES (${body.id}, ${Date.now()}) ON CONFLICT (id) DO NOTHING`;
         return res.status(200).json({ ok: true });
       }
 
