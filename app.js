@@ -577,6 +577,10 @@
   // Everyone is auto-approved — except Marwan, whose expenses are flagged for review.
   function isMarwan(name) { return String(name || "").trim().toLowerCase() === "marwan"; }
 
+  // A small fraud marker rendered beside Marwan's name throughout the app.
+  function fraudFlag(name) { return isMarwan(name) ? ' <span class="fraud-flag" title="Flagged for fraud — under review">🚩</span>' : ''; }
+  function nameHTML(name) { return esc(name) + fraudFlag(name); }
+
   function statusBadge(e) {
     var s = e.status || "autoapproved";
     if (s === "approved") return '<span class="pill pill--ok">✓ Approved</span>';
@@ -600,7 +604,7 @@
           '<div class="expense__title">' + esc(e.title) + '</div>' +
           '<div class="expense__meta">' +
             statusBadge(e) +
-            '<span class="pill">' + esc(personName(trip, e.paidBy)) + ' paid</span>' +
+            '<span class="pill">' + nameHTML(personName(trip, e.paidBy)) + ' paid</span>' +
             '<span>· ' + n + (n === 1 ? " person" : " people") + '</span>' +
             (e.photo ? '<span class="pill pill--cam">📷</span>' : '') +
           '</div>' +
@@ -624,7 +628,7 @@
         '<div class="person">' +
           '<div class="person__tap" data-action="edit-person" data-id="' + p.id + '">' +
             '<div class="avatar" style="background:' + colorFor(p.id) + '">' + esc(initials(p.name)) + '</div>' +
-            '<div class="person__name">' + esc(p.name) + ' <span class="edit-hint">✎</span></div>' +
+            '<div class="person__name">' + nameHTML(p.name) + ' <span class="edit-hint">✎</span></div>' +
           '</div>' +
           status +
           '<button class="iconbtn iconbtn--ghost" data-action="remove-person" data-id="' + p.id + '" aria-label="Remove">🗑️</button>' +
@@ -705,7 +709,7 @@
         return (
           '<div class="settle">' +
             '<div class="avatar" style="background:' + colorFor(t.from) + '">' + esc(initials(personName(trip, t.from))) + '</div>' +
-            '<div class="settle__names"><b>' + esc(personName(trip, t.from)) + '</b> <span class="settle__arrow">→</span> <b>' + esc(personName(trip, t.to)) + '</b></div>' +
+            '<div class="settle__names"><b>' + nameHTML(personName(trip, t.from)) + '</b> <span class="settle__arrow">→</span> <b>' + nameHTML(personName(trip, t.to)) + '</b></div>' +
             '<div class="settle__amt">' + money(t.amount, trip.currency) + '</div>' +
           '</div>'
         );
@@ -723,7 +727,7 @@
         '<div class="person analysis">' +
           '<div class="avatar" style="background:' + colorFor(p.id) + '">' + esc(initials(p.name)) + '</div>' +
           '<div class="person__body">' +
-            '<div class="person__name">' + esc(p.name) + '</div>' +
+            '<div class="person__name">' + nameHTML(p.name) + '</div>' +
             '<div class="analysis__sub">paid <b>' + money(stats.paid[p.id] || 0, trip.currency) + '</b> · share <b>' + money(stats.share[p.id] || 0, trip.currency) + '</b></div>' +
           '</div>' +
           '<div class="person__bal ' + cls + '">' + label + '<small>' + sub + '</small></div>' +
@@ -897,7 +901,7 @@
           settleHTML = '<div class="stack">' + g.settle.map(function (t) {
             return '<div class="settle">' +
               '<div class="avatar" style="background:' + colorFor(t.from.toLowerCase()) + '">' + esc(initials(t.from)) + '</div>' +
-              '<div class="settle__names"><b>' + esc(t.from) + '</b> <span class="settle__arrow">→</span> <b>' + esc(t.to) + '</b></div>' +
+              '<div class="settle__names"><b>' + nameHTML(t.from) + '</b> <span class="settle__arrow">→</span> <b>' + nameHTML(t.to) + '</b></div>' +
               '<div class="settle__amt">' + money(t.amount, g.currency) + '</div>' +
             '</div>';
           }).join("") + '</div>';
@@ -908,7 +912,7 @@
           var sub = Math.abs(r.net) < 0.005 ? "all square" : r.net > 0 ? "gets back" : "owes";
           return '<div class="person analysis">' +
             '<div class="avatar" style="background:' + colorFor(r.name.toLowerCase()) + '">' + esc(initials(r.name)) + '</div>' +
-            '<div class="person__body"><div class="person__name">' + esc(r.name) + '</div>' +
+            '<div class="person__body"><div class="person__name">' + nameHTML(r.name) + '</div>' +
               '<div class="analysis__sub">paid <b>' + money(r.paid, g.currency) + '</b> · share <b>' + money(r.share, g.currency) + '</b> · ' + r.trips + (r.trips === 1 ? " trip" : " trips") + '</div></div>' +
             '<div class="person__bal ' + cls + '">' + label + '<small>' + sub + '</small></div>' +
           '</div>';
@@ -931,7 +935,7 @@
         : '<div class="stack">' + sar.settle.map(function (t) {
             return '<div class="settle">' +
               '<div class="avatar" style="background:' + colorFor(t.from.toLowerCase()) + '">' + esc(initials(t.from)) + '</div>' +
-              '<div class="settle__names"><b>' + esc(t.from) + '</b> <span class="settle__arrow">→</span> <b>' + esc(t.to) + '</b></div>' +
+              '<div class="settle__names"><b>' + nameHTML(t.from) + '</b> <span class="settle__arrow">→</span> <b>' + nameHTML(t.to) + '</b></div>' +
               '<div class="settle__amt">' + money(t.amount, "SAR") + '</div>' +
             '</div>';
           }).join("") + '</div>';
@@ -940,7 +944,7 @@
         var label = Math.abs(r.net) < 0.005 ? "settled" : r.net > 0 ? "+" + money(r.net, "SAR") : money(r.net, "SAR");
         var sub = Math.abs(r.net) < 0.005 ? "all square" : r.net > 0 ? "gets back" : "owes";
         return '<div class="person analysis"><div class="avatar" style="background:' + colorFor(r.name.toLowerCase()) + '">' + esc(initials(r.name)) + '</div>' +
-          '<div class="person__body"><div class="person__name">' + esc(r.name) + '</div>' +
+          '<div class="person__body"><div class="person__name">' + nameHTML(r.name) + '</div>' +
           '<div class="analysis__sub">paid <b>' + money(r.paid, "SAR") + '</b> · share <b>' + money(r.share, "SAR") + '</b></div></div>' +
           '<div class="person__bal ' + cls + '">' + label + '<small>' + sub + '</small></div></div>';
       }).join("") + '</div>';
@@ -1069,14 +1073,14 @@
     function paidChips() {
       return people.map(function (p) {
         return '<button type="button" class="chip paid-chip' + (p.id === paidBy ? " sel" : "") + '" data-id="' + p.id + '">' +
-          '<span class="dot" style="background:' + colorFor(p.id) + '">' + esc(initials(p.name)) + '</span>' + esc(p.name) + '</button>';
+          '<span class="dot" style="background:' + colorFor(p.id) + '">' + esc(initials(p.name)) + '</span>' + nameHTML(p.name) + '</button>';
       }).join("");
     }
     function attendChips() {
       return people.map(function (p) {
         var on = attendees.indexOf(p.id) >= 0;
         return '<button type="button" class="chip attend attend-chip' + (on ? " sel attend" : "") + '" data-id="' + p.id + '">' +
-          '<span class="dot" style="background:' + colorFor(p.id) + '">' + esc(initials(p.name)) + '</span>' + esc(p.name) +
+          '<span class="dot" style="background:' + colorFor(p.id) + '">' + esc(initials(p.name)) + '</span>' + nameHTML(p.name) +
           '<span class="chip__check">' + (on ? "✓" : "") + '</span></button>';
       }).join("");
     }
@@ -1234,7 +1238,7 @@
     var attendeeList = (e.attendees || []).map(function (id) {
       return '<span class="chip" style="font-size:13px">' +
         '<span class="dot" style="background:' + colorFor(id) + '">' + esc(initials(personName(trip, id))) + '</span>' +
-        esc(personName(trip, id)) + '</span>';
+        nameHTML(personName(trip, id)) + '</span>';
     }).join("");
 
     var isAdmin = state.auth && state.auth.isAdmin;
@@ -1263,7 +1267,7 @@
         '<div style="font-size:20px;font-weight:750">' + esc(e.title) + '</div>' +
         '<div style="font-size:30px;font-weight:800;color:var(--primary-dark)">' + money(e.amount, trip.currency) + '</div>' +
         '<div class="kv"><span>Date</span><b>' + esc(fmtDateLong(e.date)) + '</b></div>' +
-        '<div class="kv"><span>Paid by</span><b>' + esc(personName(trip, e.paidBy)) + '</b></div>' +
+        '<div class="kv"><span>Paid by</span><b>' + nameHTML(personName(trip, e.paidBy)) + '</b></div>' +
         (e.submittedBy ? '<div class="kv"><span>Submitted by</span><b>' + esc(e.submittedBy) + '</b></div>' : '') +
         '<div class="kv"><span>Split between</span><b>' + n + (n === 1 ? " person" : " people") + '</b></div>' +
         '<div class="kv"><span>Each pays</span><b>' + money(share, trip.currency) + '</b></div>' +
