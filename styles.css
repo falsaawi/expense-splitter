@@ -150,6 +150,15 @@ h1,h2,h3 { margin: 0; font-weight: 700; letter-spacing: -.01em; }
 .expense__amt span { display: block; font-size: 11px; color: var(--muted); font-weight: 500; }
 .pill { background: var(--primary-soft); color: var(--primary-dark); font-size: 11px; font-weight: 650; padding: 2px 8px; border-radius: 8px; white-space: nowrap; }
 .pill--cam { background: #fff4e6; color: #c2700b; }
+.pill--pend { background: #fff4e6; color: #c2700b; }
+.pill--ok { background: var(--good-soft); color: #047857; }
+.pill--ret { background: var(--bad-soft); color: var(--bad); }
+.status-banner { border-radius: 13px; padding: 13px 15px; font-weight: 700; font-size: 14.5px; margin-bottom: 14px; }
+.status-banner.pend { background: #fff4e6; color: #b9690a; border: 1px solid #ffe2bd; }
+.status-banner.ok { background: var(--good-soft); color: #047857; border: 1px solid #b9f0d6; }
+.status-banner.bad { background: var(--bad-soft); color: var(--bad); border: 1px solid #fecdd0; }
+.status-msg { font-weight: 600; font-size: 13.5px; margin-top: 6px; }
+.btn--ok { background: var(--good); color: #fff; box-shadow: 0 6px 16px rgba(16,185,129,.3); }
 
 .daygroup__label { font-size: 12px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; margin: 18px 4px 9px; }
 .daygroup:first-child .daygroup__label { margin-top: 4px; }
