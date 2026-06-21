@@ -47,6 +47,13 @@ async function ensureSchema() {
   await sql`CREATE INDEX IF NOT EXISTS idx_expenses_trip ON expenses(trip_id)`;
   await sql`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'pending'`;
   await sql`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS return_message TEXT`;
+  await sql`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS submitted_by TEXT`;
+  // New model: auto-approve everyone except Marwan (flagged for review). Migrate
+  // any legacy 'pending' rows once — Marwan's (by payer) are flagged, rest auto-approved.
+  await sql`UPDATE expenses SET status = 'flagged'
+            WHERE status = 'pending'
+              AND paid_by IN (SELECT id FROM people WHERE lower(btrim(name)) = 'marwan')`;
+  await sql`UPDATE expenses SET status = 'autoapproved' WHERE status = 'pending'`;
   await sql`CREATE TABLE IF NOT EXISTS deleted_trips (id TEXT PRIMARY KEY, deleted_at BIGINT)`;
   await sql`CREATE TABLE IF NOT EXISTS members (name_key TEXT PRIMARY KEY, name TEXT, code TEXT, is_admin BOOLEAN DEFAULT false)`;
   schemaReady = true;
@@ -74,8 +81,9 @@ async function assembleTrip(row) {
       attendees: Array.isArray(e.attendees) ? e.attendees : [],
       photo: e.photo || null,
       note: e.note || "",
-      status: e.status || "pending",
+      status: e.status || "autoapproved",
       returnMessage: e.return_message || "",
+      submittedBy: e.submitted_by || "",
       createdAt: Number(e.created_at) || 0,
     })),
   };
@@ -101,14 +109,16 @@ async function upsertPerson(tripId, p) {
     ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name`;
 }
 async function upsertExpense(tripId, e) {
-  await sql`INSERT INTO expenses (id, trip_id, title, amount, date, paid_by, attendees, photo, note, created_at, status, return_message)
+  await sql`INSERT INTO expenses (id, trip_id, title, amount, date, paid_by, attendees, photo, note, created_at, status, return_message, submitted_by)
     VALUES (${e.id}, ${tripId}, ${e.title}, ${e.amount || 0}, ${e.date || null}, ${e.paidBy || null},
             ${JSON.stringify(e.attendees || [])}::jsonb, ${e.photo || null}, ${e.note || ""}, ${e.createdAt || Date.now()},
-            ${e.status || "pending"}, ${e.returnMessage || null})
+            ${e.status || "autoapproved"}, ${e.returnMessage || null}, ${e.submittedBy || null})
     ON CONFLICT (id) DO UPDATE SET
       title = EXCLUDED.title, amount = EXCLUDED.amount, date = EXCLUDED.date,
       paid_by = EXCLUDED.paid_by, attendees = EXCLUDED.attendees, photo = EXCLUDED.photo, note = EXCLUDED.note,
-      status = EXCLUDED.status, return_message = EXCLUDED.return_message`;
+      submitted_by = COALESCE(EXCLUDED.submitted_by, expenses.submitted_by),
+      status = CASE WHEN EXCLUDED.status = 'pending' THEN expenses.status ELSE EXCLUDED.status END,
+      return_message = CASE WHEN EXCLUDED.status = 'pending' THEN expenses.return_message ELSE EXCLUDED.return_message END`;
 }
 
 async function readBody(req) {
@@ -240,14 +250,17 @@ export default async function handler(req, res) {
         return res.status(200).json({ ok: true });
       }
 
-      // Approve / return an expense — admin only (verified by name + code).
+      // Approve / return / decline an expense — admin only (verified by name + code).
       case "reviewExpense": {
         const nameKey = String(body.name || "").trim().toLowerCase();
         const code = String(body.code || "").trim();
         const m = await sql`SELECT is_admin FROM members WHERE name_key = ${nameKey} AND code = ${code}`;
         if (!m.length || !m[0].is_admin) return res.status(200).json({ ok: false, error: "not admin" });
-        const status = body.status === "approved" ? "approved" : body.status === "returned" ? "returned" : "pending";
-        await sql`UPDATE expenses SET status = ${status}, return_message = ${status === "returned" ? (body.message || "") : null} WHERE id = ${body.expenseId} AND trip_id = ${body.tripId}`;
+        const valid = body.status === "approved" || body.status === "returned" || body.status === "declined";
+        if (!valid) return res.status(200).json({ ok: false, error: "bad status" });
+        const status = body.status;
+        const keepMsg = status === "returned" || status === "declined";
+        await sql`UPDATE expenses SET status = ${status}, return_message = ${keepMsg ? (body.message || "") : null} WHERE id = ${body.expenseId} AND trip_id = ${body.tripId}`;
         await sql`UPDATE trips SET updated_at = ${Date.now()} WHERE id = ${body.tripId}`;
         return res.status(200).json({ ok: true });
       }

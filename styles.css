@@ -153,12 +153,15 @@ h1,h2,h3 { margin: 0; font-weight: 700; letter-spacing: -.01em; }
 .pill--pend { background: #fff4e6; color: #c2700b; }
 .pill--ok { background: var(--good-soft); color: #047857; }
 .pill--ret { background: var(--bad-soft); color: var(--bad); }
+.pill--flag { background: #ffe7d6; color: #c2410c; }
 .status-banner { border-radius: 13px; padding: 13px 15px; font-weight: 700; font-size: 14.5px; margin-bottom: 14px; }
 .status-banner.pend { background: #fff4e6; color: #b9690a; border: 1px solid #ffe2bd; }
 .status-banner.ok { background: var(--good-soft); color: #047857; border: 1px solid #b9f0d6; }
 .status-banner.bad { background: var(--bad-soft); color: var(--bad); border: 1px solid #fecdd0; }
+.status-banner.flag { background: #fff1e8; color: #c2410c; border: 1px solid #ffd6bd; }
 .status-msg { font-weight: 600; font-size: 13.5px; margin-top: 6px; }
 .btn--ok { background: var(--good); color: #fff; box-shadow: 0 6px 16px rgba(16,185,129,.3); }
+.btn--warn { background: #fff4e6; color: #b9690a; box-shadow: none; }
 
 .daygroup__label { font-size: 12px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; margin: 18px 4px 9px; }
 .daygroup:first-child .daygroup__label { margin-top: 4px; }

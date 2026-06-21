@@ -574,10 +574,16 @@
     return html;
   }
 
+  // Everyone is auto-approved — except Marwan, whose expenses are flagged for review.
+  function isMarwan(name) { return String(name || "").trim().toLowerCase() === "marwan"; }
+
   function statusBadge(e) {
-    var s = e.status || "pending";
+    var s = e.status || "autoapproved";
     if (s === "approved") return '<span class="pill pill--ok">✓ Approved</span>';
+    if (s === "autoapproved") return '<span class="pill pill--ok">✓ Auto Approved</span>';
     if (s === "returned") return '<span class="pill pill--ret">⤺ Returned</span>';
+    if (s === "declined") return '<span class="pill pill--ret">✕ Declined</span>';
+    if (s === "flagged") return '<span class="pill pill--flag">🚩 Fraud review</span>';
     return '<span class="pill pill--pend">⏳ Pending</span>';
   }
 
@@ -1195,18 +1201,24 @@
           title: title, amount: Math.round(amount * 100) / 100,
           date: sheet.querySelector("#e_date").value || todayISO(),
           paidBy: paidBy, attendees: attendees.slice(),
-          photo: draftPhoto, note: sheet.querySelector("#e_note").value.trim(),
-          status: "pending", returnMessage: ""
+          photo: draftPhoto, note: sheet.querySelector("#e_note").value.trim()
         };
         if (existing) {
+          // Keep the existing approval status — don't reset a decision on edit.
           Object.keys(payload).forEach(function (k) { existing[k] = payload[k]; });
           push("saveExpense", { tripId: trip.id, expense: existing });
           toast("Expense saved", "good");
         } else {
           payload.id = uid(); payload.createdAt = Date.now();
+          payload.submittedBy = (state.auth && state.auth.name) || "";
+          // Auto-approve everyone — except Marwan, whose submissions go to review.
+          payload.status = isMarwan(payload.submittedBy) ? "flagged" : "autoapproved";
+          payload.returnMessage = "";
           trip.expenses.push(payload);
           push("saveExpense", { tripId: trip.id, expense: payload });
-          toast("Expense added", "good");
+          toast(payload.status === "flagged"
+            ? "Submitted — flagged for review by higher management"
+            : "Expense added — auto approved ✓", payload.status === "flagged" ? "" : "good");
         }
         save(); closeSheet(); render();
       });
@@ -1226,16 +1238,21 @@
     }).join("");
 
     var isAdmin = state.auth && state.auth.isAdmin;
-    var st = e.status || "pending";
-    var banner = st === "approved"
-      ? '<div class="status-banner ok">✓ Approved</div>'
-      : st === "returned"
-      ? '<div class="status-banner bad">⤺ Returned by admin' + (e.returnMessage ? '<div class="status-msg">“' + esc(e.returnMessage) + '”</div>' : '') + '</div>'
-      : '<div class="status-banner pend">⏳ Pending approval from higher management</div>';
+    var st = e.status || "autoapproved";
+    var smsg = e.returnMessage ? '<div class="status-msg">“' + esc(e.returnMessage) + '”</div>' : '';
+    var banner =
+        st === "approved"     ? '<div class="status-banner ok">✓ Approved by higher management</div>'
+      : st === "autoapproved" ? '<div class="status-banner ok">✓ Auto Approved</div>'
+      : st === "returned"     ? '<div class="status-banner bad">⤺ Returned by higher management' + smsg + '</div>'
+      : st === "declined"     ? '<div class="status-banner bad">✕ Declined by higher management' + smsg + '</div>'
+      : st === "flagged"      ? '<div class="status-banner flag">🚩 Fraud detected — needs to be reviewed by higher management</div>'
+      :                         '<div class="status-banner pend">⏳ Pending approval from higher management</div>';
     var adminActions = isAdmin
-      ? '<div class="field__row" style="margin-bottom:10px">' +
-          '<button class="btn btn--ok" id="approveExp" style="flex:1">✓ Approve</button>' +
-          '<button class="btn btn--danger" id="returnExp" style="flex:1">⤺ Return</button>' +
+      ? '<div class="section-title">Higher management</div>' +
+        '<button class="btn btn--ok btn--block" id="approveExp" style="margin-bottom:8px">✓ Approve</button>' +
+        '<div class="field__row" style="margin-bottom:10px;gap:8px">' +
+          '<button class="btn btn--warn" id="returnExp" style="flex:1">⤺ Return</button>' +
+          '<button class="btn btn--danger" id="declineExp" style="flex:1">✕ Decline</button>' +
         '</div>'
       : '';
 
@@ -1247,6 +1264,7 @@
         '<div style="font-size:30px;font-weight:800;color:var(--primary-dark)">' + money(e.amount, trip.currency) + '</div>' +
         '<div class="kv"><span>Date</span><b>' + esc(fmtDateLong(e.date)) + '</b></div>' +
         '<div class="kv"><span>Paid by</span><b>' + esc(personName(trip, e.paidBy)) + '</b></div>' +
+        (e.submittedBy ? '<div class="kv"><span>Submitted by</span><b>' + esc(e.submittedBy) + '</b></div>' : '') +
         '<div class="kv"><span>Split between</span><b>' + n + (n === 1 ? " person" : " people") + '</b></div>' +
         '<div class="kv"><span>Each pays</span><b>' + money(share, trip.currency) + '</b></div>' +
         (e.note ? '<div class="kv"><span>Note</span><b style="text-align:right;max-width:60%">' + esc(e.note) + '</b></div>' : '') +
@@ -1263,6 +1281,10 @@
       if (ap) ap.addEventListener("click", function () { reviewExpense(trip, e, "approved"); closeSheet(); });
       var rt = sheet.querySelector("#returnExp");
       if (rt) rt.addEventListener("click", function () { closeSheet(true); returnExpenseSheet(trip, e); });
+      var dc = sheet.querySelector("#declineExp");
+      if (dc) dc.addEventListener("click", function () {
+        if (confirm("Decline this expense? The submitter will see it as declined.")) { reviewExpense(trip, e, "declined"); closeSheet(); }
+      });
       sheet.querySelector("#editExp").addEventListener("click", function () {
         closeSheet(true); expenseFormSheet(trip, e);
       });
@@ -1272,9 +1294,12 @@
   // Admin: approve or return an expense (with a reason).
   function reviewExpense(trip, e, status, message) {
     e.status = status;
-    e.returnMessage = status === "returned" ? (message || "") : "";
+    e.returnMessage = (status === "returned" || status === "declined") ? (message || "") : "";
     save(); render();
-    toast(status === "approved" ? "Expense approved ✓" : "Expense returned", status === "approved" ? "good" : "");
+    var t = status === "approved" ? "Expense approved ✓"
+          : status === "declined" ? "Expense declined ✕"
+          : "Expense returned ⤺";
+    toast(t, status === "approved" ? "good" : "");
     api("reviewExpense", {
       name: state.auth && state.auth.name, code: state.auth && state.auth.code,
       tripId: trip.id, expenseId: e.id, status: status, message: e.returnMessage
