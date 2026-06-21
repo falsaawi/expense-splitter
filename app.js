@@ -166,25 +166,47 @@
   // Boot: join via ?join=CODE if present, then sync from the cloud.
   function boot() {
     render();
-    var joinCode = null;
-    try { joinCode = new URLSearchParams(location.search).get("join"); } catch (e) {}
-    if (joinCode) {
+    var codes = [];
+    try { codes = (new URLSearchParams(location.search).get("join") || "").split(",").map(function (s) { return s.trim(); }).filter(Boolean); } catch (e) {}
+    if (codes.length) {
       try { history.replaceState(null, "", location.pathname); } catch (e) {}
-      api("getTrip", { code: joinCode }).then(function (res) {
-        if (res.trip) {
-          mergeTrip(res.trip); save();
-          view = { name: "trip", tripId: res.trip.id, tab: "expenses" };
-          render();
-          toast("Joined “" + res.trip.name + "” 🎉", "good");
-        } else {
-          toast("That trip link wasn't found", "bad");
-        }
+      // load every requested trip code (one link can carry many)
+      Promise.all(codes.map(function (code) {
+        return api("getTrip", { code: code }).then(function (res) { return res.trip; }, function () { return null; });
+      })).then(function (trips) {
+        var loaded = trips.filter(Boolean);
+        loaded.forEach(function (t) { mergeTrip(t); });
+        save();
+        if (loaded.length === 1) view = { name: "trip", tripId: loaded[0].id, tab: "expenses" };
+        else view = { name: "trips" };
+        render();
+        toast(loaded.length ? ("Loaded " + loaded.length + " trip" + (loaded.length > 1 ? "s" : "") + " 🎉") : "Those trip links weren't found", loaded.length ? "good" : "bad");
         refreshAll(function () { render(); });
-      }).catch(function () { toast("Couldn't load the shared trip (offline?)", "bad"); });
+      });
     } else {
       refreshAll(function () { render(); });
     }
     startPolling();
+  }
+
+  // Build a single link that loads ALL of this device's trips (handy for moving
+  // to a new phone/browser, since trips otherwise live only in local storage).
+  function shareAllTrips() {
+    var codes = state.trips.map(function (t) { ensureCode(t); return t.code; }).filter(Boolean);
+    if (!codes.length) { toast("No trips to share yet"); return; }
+    state.trips.forEach(function (t) { push("saveTripFull", { trip: t }); }); // ensure all are in the cloud
+    save();
+    var link = location.origin + location.pathname + "?join=" + codes.join(",");
+    if (navigator.share) {
+      navigator.share({ title: "My TripSplit trips", url: link }).catch(function () {});
+    } else if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(link).then(
+        function () { toast("Link to all your trips copied — open it on any device", "good"); },
+        function () { window.prompt("Copy this link:", link); }
+      );
+    } else {
+      window.prompt("Copy this link:", link);
+    }
   }
 
   /* ---------- Utilities ---------- */
@@ -1183,12 +1205,14 @@
   /* ---------- App menu (trips list) ---------- */
   function appMenuSheet() {
     var body =
+      '<button class="btn btn--block btn--soft" data-m="shareall" style="margin-bottom:10px">🔗 Copy link to all my trips</button>' +
       '<button class="btn btn--block btn--soft" data-m="export" style="margin-bottom:10px">⬇️ Export all data (JSON)</button>' +
       '<label class="btn btn--block btn--soft" for="importInput" style="margin-bottom:10px">⬆️ Import backup</label>' +
       '<input id="importInput" type="file" accept="application/json,.json" class="hidden" />' +
       '<button class="btn btn--block btn--soft" data-m="demo">✨ Load a sample trip</button>' +
-      '<div class="hint" style="text-align:center;margin-top:14px">Trips sync to the cloud so your whole group shares them. Export is a personal backup.</div>';
+      '<div class="hint" style="text-align:center;margin-top:14px">“Link to all my trips” reopens everything on a new phone or browser. Trips sync to the cloud so your group shares them.</div>';
     openSheet("TripSplit", body, function (sheet) {
+      sheet.querySelector('[data-m="shareall"]').addEventListener("click", function () { closeSheet(); shareAllTrips(); });
       sheet.querySelector('[data-m="export"]').addEventListener("click", function () { closeSheet(); exportData(null); });
       sheet.querySelector('[data-m="demo"]').addEventListener("click", function () { closeSheet(); seedDemo(); });
       sheet.querySelector("#importInput").addEventListener("change", function () {
