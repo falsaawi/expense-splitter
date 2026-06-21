@@ -108,10 +108,18 @@
       cloud.ok = true; cloud.checked = true;
       var have = {};
       (res.trips || []).forEach(function (t) { have[t.id] = true; });
-      // push local trips the server doesn't know yet (e.g. created before sync)
+      // Reconcile local trips the server doesn't have: migrate real ones up,
+      // but drop dead empty shells (0 people, 0 expenses) so deleted/duplicate
+      // empties aren't recreated. Recent or currently-open trips are never pruned.
+      var prune = [];
       state.trips.forEach(function (t) {
-        if (!have[t.id]) { ensureCode(t); push("saveTripFull", { trip: t }); }
+        if (have[t.id]) return;
+        var empty = !(t.people || []).length && !(t.expenses || []).length;
+        var oldEnough = (Date.now() - (t.createdAt || 0)) > 120000;
+        if (empty && oldEnough && view.tripId !== t.id) { prune.push(t.id); }
+        else { ensureCode(t); push("saveTripFull", { trip: t }); }
       });
+      if (prune.length) state.trips = state.trips.filter(function (t) { return prune.indexOf(t.id) < 0; });
       (res.trips || []).forEach(function (t) { mergeTrip(t); });
       save();
       if (cb) cb();
@@ -927,6 +935,13 @@
           push("updateTrip", { id: existing.id, name: name, currency: currency, emoji: chosen });
           toast("Trip updated", "good");
         } else {
+          var same = state.trips.filter(function (t) { return (t.name || "").trim().toLowerCase() === name.toLowerCase(); })[0];
+          if (same && confirm('You already have a trip called "' + name + '".\n\nOK = open the existing one  ·  Cancel = create a separate new trip')) {
+            save(); closeSheet();
+            view = { name: "trip", tripId: same.id, tab: "expenses" };
+            render();
+            return;
+          }
           var nt = { id: uid(), code: shortCode(), name: name, currency: currency, emoji: chosen, createdAt: Date.now(), people: [], expenses: [] };
           state.trips.push(nt);
           push("saveTripFull", { trip: nt });
