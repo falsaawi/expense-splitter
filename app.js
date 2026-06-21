@@ -199,7 +199,7 @@
     return (
       '<div class="app">' +
         '<header class="appbar"><div class="appbar__row">' +
-          '<div class="brand-logo">🧭</div>' +
+          '<img class="brand-logo" src="icon.svg" alt="Lean" />' +
           '<div style="min-width:0"><div class="appbar__title"><span class="ttl">TripSplit</span></div>' +
           '<div class="appbar__sub">Sign in to see your trips</div></div>' +
         '</div></header>' +
@@ -481,7 +481,7 @@
       '<div class="app">' +
         '<header class="appbar">' +
           '<div class="appbar__row">' +
-            '<div class="brand-logo">🧭</div>' +
+            '<img class="brand-logo" src="icon.svg" alt="Lean" />' +
             '<div style="min-width:0">' +
               '<div class="appbar__title"><span class="ttl">TripSplit</span></div>' +
               '<div class="appbar__sub">Fair dinner splitting, city by city</div>' +

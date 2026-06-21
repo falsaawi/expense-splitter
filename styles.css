@@ -55,8 +55,8 @@ h1,h2,h3 { margin: 0; font-weight: 700; letter-spacing: -.01em; }
 .appbar .iconbtn:active { background: rgba(255,255,255,.3); }
 
 .brand-logo {
-  width: 30px; height: 30px; border-radius: 9px; background: rgba(255,255,255,.2);
-  display: grid; place-items: center; font-size: 17px; flex: none;
+  width: 34px; height: 34px; border-radius: 9px; background: #fff; flex: none;
+  object-fit: contain; padding: 2px; box-sizing: border-box; box-shadow: 0 2px 7px rgba(0,0,0,.14);
 }
 
 .content { padding: 16px 16px 120px; }
