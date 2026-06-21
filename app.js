@@ -106,6 +106,12 @@
     if (!ids.length) { cloud.checked = true; if (cb) cb(); return; }
     api("getTrips", { ids: ids }).then(function (res) {
       cloud.ok = true; cloud.checked = true;
+      // drop trips the server reports as deleted (propagates deletions across devices)
+      if (res.deleted && res.deleted.length) {
+        var del = {};
+        res.deleted.forEach(function (id) { del[id] = true; });
+        state.trips = state.trips.filter(function (t) { return !del[t.id]; });
+      }
       var have = {};
       (res.trips || []).forEach(function (t) { have[t.id] = true; });
       // Reconcile local trips the server doesn't have: migrate real ones up,
