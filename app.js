@@ -171,28 +171,50 @@
 
   // Boot: join via ?join=CODE if present, then sync from the cloud.
   function boot() {
-    render();
-    var codes = [];
-    try { codes = (new URLSearchParams(location.search).get("join") || "").split(",").map(function (s) { return s.trim(); }).filter(Boolean); } catch (e) {}
-    if (codes.length) {
-      try { history.replaceState(null, "", location.pathname); } catch (e) {}
-      // load every requested trip code (one link can carry many)
-      Promise.all(codes.map(function (code) {
-        return api("getTrip", { code: code }).then(function (res) { return res.trip; }, function () { return null; });
-      })).then(function (trips) {
-        var loaded = trips.filter(Boolean);
-        loaded.forEach(function (t) { mergeTrip(t); });
-        save();
-        if (loaded.length === 1) view = { name: "trip", tripId: loaded[0].id, tab: "expenses" };
-        else view = { name: "trips" };
-        render();
-        toast(loaded.length ? ("Loaded " + loaded.length + " trip" + (loaded.length > 1 ? "s" : "") + " 🎉") : "Those trip links weren't found", loaded.length ? "good" : "bad");
-        refreshAll(function () { render(); });
+    if (state.auth && state.auth.name && state.auth.code) {
+      render(); // show cached trips while we refresh
+      doLogin(state.auth.name, state.auth.code, function (ok) {
+        if (!ok) { state.auth = null; state.trips = []; save(); render(); }
+        else { view = { name: "trips" }; render(); startPolling(); }
       });
     } else {
-      refreshAll(function () { render(); });
+      state.auth = null;
+      render(); // login screen
     }
-    startPolling();
+  }
+
+  // Sign in with name + 4-digit code; loads only that member's trips (all if admin).
+  function doLogin(name, code, cb) {
+    api("login", { name: name, code: code }).then(function (res) {
+      if (res && res.ok) {
+        state.auth = { name: res.name, code: String(code), isAdmin: !!res.isAdmin };
+        state.trips = res.trips || [];
+        save();
+        if (cb) cb(true);
+      } else { if (cb) cb(false); }
+    }).catch(function () { if (cb) cb(false); });
+  }
+
+  function renderLogin() {
+    return (
+      '<div class="app">' +
+        '<header class="appbar"><div class="appbar__row">' +
+          '<div class="brand-logo">🧭</div>' +
+          '<div style="min-width:0"><div class="appbar__title"><span class="ttl">TripSplit</span></div>' +
+          '<div class="appbar__sub">Sign in to see your trips</div></div>' +
+        '</div></header>' +
+        '<main class="content">' +
+          '<div class="card" style="margin-top:8px">' +
+            '<div style="font-size:19px;font-weight:750">Sign in</div>' +
+            '<div class="hint" style="margin:6px 0 16px">Enter your name and the 4-digit code you were given.</div>' +
+            '<div class="field"><label>Your name</label><input id="loginName" type="text" autocomplete="off" enterkeyhint="next" placeholder="e.g. Fahad" /></div>' +
+            '<div class="field"><label>4-digit code</label><input id="loginCode" type="text" inputmode="numeric" maxlength="4" autocomplete="off" enterkeyhint="go" placeholder="••••" /></div>' +
+            '<button class="btn btn--block btn--lg" data-action="do-login">Sign in</button>' +
+          '</div>' +
+          '<div class="muted-note" style="margin-top:14px">Don’t have a code? Ask Fahad for yours.</div>' +
+        '</main>' +
+      '</div>'
+    );
   }
 
   // Build a single link that loads ALL of this device's trips (handy for moving
@@ -358,6 +380,7 @@
   /* ---------- UI helpers ---------- */
   var app = document.getElementById("app");
   function render() {
+    if (!state.auth) { app.innerHTML = renderLogin(); window.scrollTo(0, 0); return; }
     if (view.name === "trips") app.innerHTML = renderTrips();
     else if (view.name === "trip") app.innerHTML = renderTrip();
     else if (view.name === "overall") app.innerHTML = renderOverall();
@@ -734,7 +757,7 @@
       if (!a || !b || !(Math.abs(amt) > 0)) return;
       var ka = a.toLowerCase(), kb = b.toLowerCase();
       if (ka === kb) return;
-      var key = ka < kb ? ka + " " + kb : kb + " " + ka;
+      var key = ka < kb ? JSON.stringify([ka, kb]) : JSON.stringify([kb, ka]);
       if (!map[key]) map[key] = { a: ka < kb ? a : b, b: ka < kb ? b : a, amt: 0 };
       map[key].amt += (ka < kb ? amt : -amt);
     });
@@ -999,6 +1022,8 @@
             return;
           }
           var nt = { id: uid(), code: shortCode(), name: name, currency: currency, emoji: chosen, createdAt: Date.now(), people: [], expenses: [] };
+          // add the signed-in person so the new trip shows up for them
+          if (state.auth && state.auth.name) nt.people.push({ id: uid(), name: state.auth.name });
           state.trips.push(nt);
           push("saveTripFull", { trip: nt });
           view = { name: "trip", tripId: nt.id, tab: "people" };
@@ -1238,30 +1263,16 @@
 
   /* ---------- App menu (trips list) ---------- */
   function appMenuSheet() {
+    var who = state.auth ? (esc(state.auth.name) + (state.auth.isAdmin ? " · admin" : "")) : "";
     var body =
-      '<button class="btn btn--block btn--soft" data-m="shareall" style="margin-bottom:10px">🔗 Copy link to all my trips</button>' +
-      '<button class="btn btn--block btn--soft" data-m="export" style="margin-bottom:10px">⬇️ Export all data (JSON)</button>' +
-      '<label class="btn btn--block btn--soft" for="importInput" style="margin-bottom:10px">⬆️ Import backup</label>' +
-      '<input id="importInput" type="file" accept="application/json,.json" class="hidden" />' +
-      '<button class="btn btn--block btn--soft" data-m="demo">✨ Load a sample trip</button>' +
-      '<div class="hint" style="text-align:center;margin-top:14px">“Link to all my trips” reopens everything on a new phone or browser. Trips sync to the cloud so your group shares them.</div>';
+      '<div class="hint" style="text-align:left;margin:-2px 0 14px">Signed in as <b style="color:var(--ink)">' + who + '</b></div>' +
+      '<button class="btn btn--block btn--soft" data-m="export" style="margin-bottom:10px">⬇️ Export my data (JSON backup)</button>' +
+      '<button class="btn btn--block btn--danger" data-m="logout">🔒 Log out</button>';
     openSheet("TripSplit", body, function (sheet) {
-      sheet.querySelector('[data-m="shareall"]').addEventListener("click", function () { closeSheet(); shareAllTrips(); });
       sheet.querySelector('[data-m="export"]').addEventListener("click", function () { closeSheet(); exportData(null); });
-      sheet.querySelector('[data-m="demo"]').addEventListener("click", function () { closeSheet(); seedDemo(); });
-      sheet.querySelector("#importInput").addEventListener("change", function () {
-        var f = this.files && this.files[0]; if (!f) return;
-        var r = new FileReader();
-        r.onload = function () {
-          try {
-            var data = JSON.parse(r.result);
-            if (!data || !Array.isArray(data.trips)) throw new Error("bad");
-            state = data;
-            state.trips.forEach(function (t) { ensureCode(t); push("saveTripFull", { trip: t }); });
-            save(); closeSheet(); view = { name: "trips" }; render(); toast("Backup imported", "good");
-          } catch (e) { toast("That file isn't a valid backup", "bad"); }
-        };
-        r.readAsText(f);
+      sheet.querySelector('[data-m="logout"]').addEventListener("click", function () {
+        closeSheet();
+        if (confirm("Log out of TripSplit?")) { state.auth = null; state.trips = []; save(); stopPolling(); view = { name: "trips" }; render(); }
       });
     });
   }
@@ -1341,6 +1352,20 @@
     var trip = view.tripId ? getTrip(view.tripId) : null;
 
     switch (action) {
+      case "do-login": {
+        var nmEl = document.getElementById("loginName"), cdEl = document.getElementById("loginCode");
+        var nm = (nmEl && nmEl.value || "").trim(), cd = (cdEl && cdEl.value || "").trim();
+        if (!nm || !cd) { toast("Enter your name and code", "bad"); break; }
+        toast("Signing in…");
+        doLogin(nm, cd, function (ok) {
+          if (ok) { view = { name: "trips" }; render(); stopPolling(); startPolling(); toast("Welcome, " + state.auth.name + " 👋", "good"); }
+          else { toast("Wrong name or code", "bad"); }
+        });
+        break;
+      }
+      case "logout":
+        if (confirm("Log out of TripSplit?")) { state.auth = null; state.trips = []; save(); stopPolling(); view = { name: "trips" }; render(); }
+        break;
       case "new-trip": tripFormSheet(null); break;
       case "seed-demo": seedDemo(); break;
       case "menu": appMenuSheet(); break;
@@ -1382,6 +1407,10 @@
   document.addEventListener("keydown", function (ev) {
     if (ev.key === "Enter" && ev.target && ev.target.id === "newPerson") {
       ev.preventDefault(); addPersonFromInput();
+    }
+    if (ev.key === "Enter" && ev.target && (ev.target.id === "loginName" || ev.target.id === "loginCode")) {
+      ev.preventDefault();
+      var btn = document.querySelector('[data-action="do-login"]'); if (btn) btn.click();
     }
     if (ev.key === "Escape") {
       var lb = document.getElementById("lightbox");
