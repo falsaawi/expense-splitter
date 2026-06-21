@@ -46,6 +46,7 @@ async function ensureSchema() {
   await sql`CREATE INDEX IF NOT EXISTS idx_people_trip ON people(trip_id)`;
   await sql`CREATE INDEX IF NOT EXISTS idx_expenses_trip ON expenses(trip_id)`;
   await sql`CREATE TABLE IF NOT EXISTS deleted_trips (id TEXT PRIMARY KEY, deleted_at BIGINT)`;
+  await sql`CREATE TABLE IF NOT EXISTS members (name_key TEXT PRIMARY KEY, name TEXT, code TEXT, is_admin BOOLEAN DEFAULT false)`;
   schemaReady = true;
 }
 
@@ -133,6 +134,27 @@ export default async function handler(req, res) {
     switch (op) {
       case "ping":
         return res.status(200).json({ ok: true });
+
+      // Login with name + 4-digit code. Returns the member's trips (all, if admin).
+      case "login": {
+        const nameKey = String(body.name || "").trim().toLowerCase();
+        const code = String(body.code || "").trim();
+        if (!nameKey || !code) return res.status(200).json({ ok: false });
+        const rows = await sql`SELECT name, code, is_admin FROM members WHERE name_key = ${nameKey}`;
+        if (!rows.length || String(rows[0].code) !== code) return res.status(200).json({ ok: false });
+        const m = rows[0];
+        let tripRows;
+        if (m.is_admin) {
+          tripRows = await sql`SELECT * FROM trips ORDER BY updated_at DESC NULLS LAST`;
+        } else {
+          tripRows = await sql`SELECT t.* FROM trips t WHERE EXISTS (
+            SELECT 1 FROM people p WHERE p.trip_id = t.id AND lower(trim(p.name)) = ${nameKey}
+          ) ORDER BY t.updated_at DESC NULLS LAST`;
+        }
+        const trips = [];
+        for (const r of tripRows) { const t = await assembleTrip(r); if (t) trips.push(t); }
+        return res.status(200).json({ ok: true, name: m.name, isAdmin: !!m.is_admin, trips });
+      }
 
       case "getTrips": {
         const ids = Array.isArray(body.ids) ? body.ids.slice(0, 200) : [];
