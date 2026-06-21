@@ -725,32 +725,59 @@
      People are matched by name; trips are grouped by currency so different
      city currencies are never mixed.
      ============================================================ */
+  // Combine same-pair transfers across trips, netting opposing directions.
+  // Inputs/outputs use display names (not ids), since people are matched by name.
+  function mergeTx(list) {
+    var map = {};
+    list.forEach(function (t) {
+      var a = t.from, b = t.to, amt = t.amount;
+      if (!a || !b || !(Math.abs(amt) > 0)) return;
+      var ka = a.toLowerCase(), kb = b.toLowerCase();
+      if (ka === kb) return;
+      var key = ka < kb ? ka + " " + kb : kb + " " + ka;
+      if (!map[key]) map[key] = { a: ka < kb ? a : b, b: ka < kb ? b : a, amt: 0 };
+      map[key].amt += (ka < kb ? amt : -amt);
+    });
+    var out = [];
+    Object.keys(map).forEach(function (k) {
+      var m = map[k], amt = Math.round(m.amt * 100) / 100;
+      if (Math.abs(amt) < 0.005) return;
+      if (amt > 0) out.push({ from: m.a, to: m.b, amount: amt });
+      else out.push({ from: m.b, to: m.a, amount: -amt });
+    });
+    out.sort(function (x, y) { return y.amount - x.amount; });
+    return out;
+  }
+
   function computeOverall() {
-    var groups = {}; // currency -> { nameKey -> {name, net, paid, share, trips} }
+    var groups = {}; // currency -> { people: {nameKey->{...}}, tx: [{from,to,amount}] }
     state.trips.forEach(function (trip) {
       var cur = trip.currency || "EUR";
       var st = computeStats(trip);
-      if (!groups[cur]) groups[cur] = {};
+      if (!groups[cur]) groups[cur] = { people: {}, tx: [] };
+      var gp = groups[cur].people;
       (trip.people || []).forEach(function (p) {
         var key = (p.name || "").trim().toLowerCase();
         if (!key) return;
-        if (!groups[cur][key]) groups[cur][key] = { name: (p.name || "").trim(), net: 0, paid: 0, share: 0, trips: 0 };
-        var g = groups[cur][key];
-        g.net += st.net[p.id] || 0; g.paid += st.paid[p.id] || 0; g.share += st.share[p.id] || 0; g.trips += 1;
+        if (!gp[key]) gp[key] = { name: (p.name || "").trim(), net: 0, paid: 0, share: 0, trips: 0 };
+        gp[key].net += st.net[p.id] || 0; gp[key].paid += st.paid[p.id] || 0; gp[key].share += st.share[p.id] || 0; gp[key].trips += 1;
+      });
+      // settle THIS trip within its own group, then record the transfers by name
+      settle(computeBalances(trip)).forEach(function (t) {
+        groups[cur].tx.push({ from: personName(trip, t.from), to: personName(trip, t.to), amount: t.amount });
       });
     });
     var out = [];
     Object.keys(groups).forEach(function (cur) {
-      var people = groups[cur], bal = {};
+      var people = groups[cur].people;
       Object.keys(people).forEach(function (k) {
         people[k].net = Math.round(people[k].net * 100) / 100;
         people[k].paid = Math.round(people[k].paid * 100) / 100;
         people[k].share = Math.round(people[k].share * 100) / 100;
-        bal[k] = people[k].net;
       });
       var rows = Object.keys(people).map(function (k) { return people[k]; }).sort(function (a, b) { return b.net - a.net; });
       var total = rows.reduce(function (s, r) { return s + (r.paid || 0); }, 0);
-      out.push({ currency: cur, settle: settle(bal), rows: rows, nameByKey: people, total: total });
+      out.push({ currency: cur, settle: mergeTx(groups[cur].tx), rows: rows, total: Math.round(total * 100) / 100 });
     });
     out.sort(function (a, b) { return b.rows.length - a.rows.length; });
     return out;
@@ -761,9 +788,9 @@
     return SAR_RATES[cur] || 1;
   }
 
-  // Convert every trip to SAR and roll everyone up into one combined settlement.
+  // Convert every trip to SAR; settle each trip within its own group, then combine.
   function computeOverallSAR() {
-    var people = {};
+    var people = {}, txList = [];
     state.trips.forEach(function (trip) {
       var rate = rateFor(trip.currency || "EUR");
       var st = computeStats(trip);
@@ -774,17 +801,18 @@
         people[key].paid += (st.paid[p.id] || 0) * rate;
         people[key].share += (st.share[p.id] || 0) * rate;
       });
+      settle(computeBalances(trip)).forEach(function (t) {
+        txList.push({ from: personName(trip, t.from), to: personName(trip, t.to), amount: t.amount * rate });
+      });
     });
-    var bal = {};
     Object.keys(people).forEach(function (k) {
       people[k].net = Math.round(people[k].net * 100) / 100;
       people[k].paid = Math.round(people[k].paid * 100) / 100;
       people[k].share = Math.round(people[k].share * 100) / 100;
-      bal[k] = people[k].net;
     });
     var rows = Object.keys(people).map(function (k) { return people[k]; }).sort(function (a, b) { return b.net - a.net; });
     var total = rows.reduce(function (s, r) { return s + (r.paid || 0); }, 0);
-    return { settle: settle(bal), rows: rows, nameByKey: people, total: Math.round(total * 100) / 100 };
+    return { settle: mergeTx(txList), rows: rows, total: Math.round(total * 100) / 100 };
   }
 
   // Sheet to edit exchange rates (SAR per 1 unit) for the currencies in use.
@@ -831,8 +859,8 @@
         } else {
           settleHTML = '<div class="stack">' + g.settle.map(function (t) {
             return '<div class="settle">' +
-              '<div class="avatar" style="background:' + colorFor(t.from) + '">' + esc(initials(g.nameByKey[t.from].name)) + '</div>' +
-              '<div class="settle__names"><b>' + esc(g.nameByKey[t.from].name) + '</b> <span class="settle__arrow">→</span> <b>' + esc(g.nameByKey[t.to].name) + '</b></div>' +
+              '<div class="avatar" style="background:' + colorFor(t.from.toLowerCase()) + '">' + esc(initials(t.from)) + '</div>' +
+              '<div class="settle__names"><b>' + esc(t.from) + '</b> <span class="settle__arrow">→</span> <b>' + esc(t.to) + '</b></div>' +
               '<div class="settle__amt">' + money(t.amount, g.currency) + '</div>' +
             '</div>';
           }).join("") + '</div>';
@@ -865,8 +893,8 @@
         ? '<div class="card" style="text-align:center;padding:20px"><div style="font-size:30px">🎉</div><div style="font-weight:700;margin-top:6px">Everyone is settled up</div></div>'
         : '<div class="stack">' + sar.settle.map(function (t) {
             return '<div class="settle">' +
-              '<div class="avatar" style="background:' + colorFor(t.from) + '">' + esc(initials(sar.nameByKey[t.from].name)) + '</div>' +
-              '<div class="settle__names"><b>' + esc(sar.nameByKey[t.from].name) + '</b> <span class="settle__arrow">→</span> <b>' + esc(sar.nameByKey[t.to].name) + '</b></div>' +
+              '<div class="avatar" style="background:' + colorFor(t.from.toLowerCase()) + '">' + esc(initials(t.from)) + '</div>' +
+              '<div class="settle__names"><b>' + esc(t.from) + '</b> <span class="settle__arrow">→</span> <b>' + esc(t.to) + '</b></div>' +
               '<div class="settle__amt">' + money(t.amount, "SAR") + '</div>' +
             '</div>';
           }).join("") + '</div>';
