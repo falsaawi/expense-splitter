@@ -45,6 +45,8 @@ async function ensureSchema() {
   )`;
   await sql`CREATE INDEX IF NOT EXISTS idx_people_trip ON people(trip_id)`;
   await sql`CREATE INDEX IF NOT EXISTS idx_expenses_trip ON expenses(trip_id)`;
+  await sql`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'pending'`;
+  await sql`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS return_message TEXT`;
   await sql`CREATE TABLE IF NOT EXISTS deleted_trips (id TEXT PRIMARY KEY, deleted_at BIGINT)`;
   await sql`CREATE TABLE IF NOT EXISTS members (name_key TEXT PRIMARY KEY, name TEXT, code TEXT, is_admin BOOLEAN DEFAULT false)`;
   schemaReady = true;
@@ -72,6 +74,8 @@ async function assembleTrip(row) {
       attendees: Array.isArray(e.attendees) ? e.attendees : [],
       photo: e.photo || null,
       note: e.note || "",
+      status: e.status || "pending",
+      returnMessage: e.return_message || "",
       createdAt: Number(e.created_at) || 0,
     })),
   };
@@ -97,12 +101,14 @@ async function upsertPerson(tripId, p) {
     ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name`;
 }
 async function upsertExpense(tripId, e) {
-  await sql`INSERT INTO expenses (id, trip_id, title, amount, date, paid_by, attendees, photo, note, created_at)
+  await sql`INSERT INTO expenses (id, trip_id, title, amount, date, paid_by, attendees, photo, note, created_at, status, return_message)
     VALUES (${e.id}, ${tripId}, ${e.title}, ${e.amount || 0}, ${e.date || null}, ${e.paidBy || null},
-            ${JSON.stringify(e.attendees || [])}::jsonb, ${e.photo || null}, ${e.note || ""}, ${e.createdAt || Date.now()})
+            ${JSON.stringify(e.attendees || [])}::jsonb, ${e.photo || null}, ${e.note || ""}, ${e.createdAt || Date.now()},
+            ${e.status || "pending"}, ${e.returnMessage || null})
     ON CONFLICT (id) DO UPDATE SET
       title = EXCLUDED.title, amount = EXCLUDED.amount, date = EXCLUDED.date,
-      paid_by = EXCLUDED.paid_by, attendees = EXCLUDED.attendees, photo = EXCLUDED.photo, note = EXCLUDED.note`;
+      paid_by = EXCLUDED.paid_by, attendees = EXCLUDED.attendees, photo = EXCLUDED.photo, note = EXCLUDED.note,
+      status = EXCLUDED.status, return_message = EXCLUDED.return_message`;
 }
 
 async function readBody(req) {
@@ -230,6 +236,18 @@ export default async function handler(req, res) {
 
       case "deleteExpense": {
         await sql`DELETE FROM expenses WHERE id = ${body.expenseId} AND trip_id = ${body.tripId}`;
+        await sql`UPDATE trips SET updated_at = ${Date.now()} WHERE id = ${body.tripId}`;
+        return res.status(200).json({ ok: true });
+      }
+
+      // Approve / return an expense — admin only (verified by name + code).
+      case "reviewExpense": {
+        const nameKey = String(body.name || "").trim().toLowerCase();
+        const code = String(body.code || "").trim();
+        const m = await sql`SELECT is_admin FROM members WHERE name_key = ${nameKey} AND code = ${code}`;
+        if (!m.length || !m[0].is_admin) return res.status(200).json({ ok: false, error: "not admin" });
+        const status = body.status === "approved" ? "approved" : body.status === "returned" ? "returned" : "pending";
+        await sql`UPDATE expenses SET status = ${status}, return_message = ${status === "returned" ? (body.message || "") : null} WHERE id = ${body.expenseId} AND trip_id = ${body.tripId}`;
         await sql`UPDATE trips SET updated_at = ${Date.now()} WHERE id = ${body.tripId}`;
         return res.status(200).json({ ok: true });
       }

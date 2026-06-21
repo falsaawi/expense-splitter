@@ -199,7 +199,7 @@
     return (
       '<div class="app">' +
         '<header class="appbar"><div class="appbar__row">' +
-          '<div class="brand-logo">🧭</div>' +
+          '<img class="brand-logo" src="icon.svg" alt="Lean" />' +
           '<div style="min-width:0"><div class="appbar__title"><span class="ttl">TripSplit</span></div>' +
           '<div class="appbar__sub">Sign in to see your trips</div></div>' +
         '</div></header>' +
@@ -481,7 +481,7 @@
       '<div class="app">' +
         '<header class="appbar">' +
           '<div class="appbar__row">' +
-            '<div class="brand-logo">🧭</div>' +
+            '<img class="brand-logo" src="icon.svg" alt="Lean" />' +
             '<div style="min-width:0">' +
               '<div class="appbar__title"><span class="ttl">TripSplit</span></div>' +
               '<div class="appbar__sub">Fair dinner splitting, city by city</div>' +
@@ -574,6 +574,13 @@
     return html;
   }
 
+  function statusBadge(e) {
+    var s = e.status || "pending";
+    if (s === "approved") return '<span class="pill pill--ok">✓ Approved</span>';
+    if (s === "returned") return '<span class="pill pill--ret">⤺ Returned</span>';
+    return '<span class="pill pill--pend">⏳ Pending</span>';
+  }
+
   function expenseRow(trip, e) {
     var n = (e.attendees || []).length;
     var share = n ? e.amount / n : 0;
@@ -586,6 +593,7 @@
         '<div class="expense__body">' +
           '<div class="expense__title">' + esc(e.title) + '</div>' +
           '<div class="expense__meta">' +
+            statusBadge(e) +
             '<span class="pill">' + esc(personName(trip, e.paidBy)) + ' paid</span>' +
             '<span>· ' + n + (n === 1 ? " person" : " people") + '</span>' +
             (e.photo ? '<span class="pill pill--cam">📷</span>' : '') +
@@ -1187,7 +1195,8 @@
           title: title, amount: Math.round(amount * 100) / 100,
           date: sheet.querySelector("#e_date").value || todayISO(),
           paidBy: paidBy, attendees: attendees.slice(),
-          photo: draftPhoto, note: sheet.querySelector("#e_note").value.trim()
+          photo: draftPhoto, note: sheet.querySelector("#e_note").value.trim(),
+          status: "pending", returnMessage: ""
         };
         if (existing) {
           Object.keys(payload).forEach(function (k) { existing[k] = payload[k]; });
@@ -1216,8 +1225,23 @@
         esc(personName(trip, id)) + '</span>';
     }).join("");
 
+    var isAdmin = state.auth && state.auth.isAdmin;
+    var st = e.status || "pending";
+    var banner = st === "approved"
+      ? '<div class="status-banner ok">✓ Approved</div>'
+      : st === "returned"
+      ? '<div class="status-banner bad">⤺ Returned by admin' + (e.returnMessage ? '<div class="status-msg">“' + esc(e.returnMessage) + '”</div>' : '') + '</div>'
+      : '<div class="status-banner pend">⏳ Pending approval from higher management</div>';
+    var adminActions = isAdmin
+      ? '<div class="field__row" style="margin-bottom:10px">' +
+          '<button class="btn btn--ok" id="approveExp" style="flex:1">✓ Approve</button>' +
+          '<button class="btn btn--danger" id="returnExp" style="flex:1">⤺ Return</button>' +
+        '</div>'
+      : '';
+
     var body =
       (e.photo ? '<img src="' + e.photo + '" class="detail-photo" id="detailPhoto" alt="invoice" />' : '') +
+      banner +
       '<div class="card stack" style="margin-bottom:14px">' +
         '<div style="font-size:20px;font-weight:750">' + esc(e.title) + '</div>' +
         '<div style="font-size:30px;font-weight:800;color:var(--primary-dark)">' + money(e.amount, trip.currency) + '</div>' +
@@ -1229,13 +1253,49 @@
       '</div>' +
       '<div class="section-title">Attended</div>' +
       '<div class="chips" style="margin-bottom:18px">' + attendeeList + '</div>' +
+      adminActions +
       '<button class="btn btn--block btn--soft" id="editExp">✏️ Edit expense</button>';
 
     openSheet("Expense", body, function (sheet) {
       var dp = sheet.querySelector("#detailPhoto");
       if (dp) dp.addEventListener("click", function () { openLightbox(e.photo); });
+      var ap = sheet.querySelector("#approveExp");
+      if (ap) ap.addEventListener("click", function () { reviewExpense(trip, e, "approved"); closeSheet(); });
+      var rt = sheet.querySelector("#returnExp");
+      if (rt) rt.addEventListener("click", function () { closeSheet(true); returnExpenseSheet(trip, e); });
       sheet.querySelector("#editExp").addEventListener("click", function () {
         closeSheet(true); expenseFormSheet(trip, e);
+      });
+    });
+  }
+
+  // Admin: approve or return an expense (with a reason).
+  function reviewExpense(trip, e, status, message) {
+    e.status = status;
+    e.returnMessage = status === "returned" ? (message || "") : "";
+    save(); render();
+    toast(status === "approved" ? "Expense approved ✓" : "Expense returned", status === "approved" ? "good" : "");
+    api("reviewExpense", {
+      name: state.auth && state.auth.name, code: state.auth && state.auth.code,
+      tripId: trip.id, expenseId: e.id, status: status, message: e.returnMessage
+    }).catch(function () { toast("Couldn't sync the decision — check your connection", "bad"); });
+  }
+
+  var RETURN_MESSAGES = [
+    "Fraud detected, GRC will review it and get back to you",
+    "Your expense is not approved due to budget issues"
+  ];
+  function returnExpenseSheet(trip, e) {
+    var body = RETURN_MESSAGES.map(function (m, i) {
+      return '<button class="btn btn--block btn--soft return-msg" data-i="' + i + '" style="text-align:left;white-space:normal;height:auto;padding:15px;margin-bottom:10px">' + esc(m) + '</button>';
+    }).join("") +
+    '<div class="hint" style="text-align:center;margin-top:4px">Pick a reason — the member sees it on the returned expense.</div>';
+    openSheet("Return expense", body, function (sheet) {
+      sheet.querySelectorAll(".return-msg").forEach(function (b) {
+        b.addEventListener("click", function () {
+          reviewExpense(trip, e, "returned", RETURN_MESSAGES[+b.getAttribute("data-i")]);
+          closeSheet();
+        });
       });
     });
   }
