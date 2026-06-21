@@ -4,6 +4,7 @@ package-lock.json
 
 # preview artifacts
 /preview/
+/backups/
 *.local
 
 # OS / editor
