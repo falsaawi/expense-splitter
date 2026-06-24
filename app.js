@@ -619,8 +619,23 @@
   // Everyone is auto-approved — except Marwan, whose expenses are flagged for review.
   function isMarwan(name) { return String(name || "").trim().toLowerCase() === "marwan"; }
 
-  // A small fraud marker rendered beside Marwan's name throughout the app.
-  function fraudFlag(name) { return isMarwan(name) ? ' <span class="fraud-flag" title="Flagged for fraud — under review">🚩</span>' : ''; }
+  // Fraud marker shown beside a flagged person's name throughout the app.
+  // The risk % is a deterministic "random" value in 65–100, derived from the
+  // name so it stays stable across the ~12 places a name is rendered (a truly
+  // per-render random would show different numbers for the same person at once).
+  function fraudScore(name) {
+    var s = String(name || "").trim().toLowerCase(), h = 0;
+    for (var i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+    return 65 + (h % 36); // 65..100 inclusive
+  }
+  function fraudFlag(name) {
+    if (!isMarwan(name)) return '';
+    var p = fraudScore(name);
+    return ' <span class="fraud-mark" tabindex="0" role="img" aria-label="Fraud risk ' + p + ' percent, flagged for review"' +
+           ' title="Fraud risk ' + p + '% — flagged for review">' +
+             '🚩<span class="fraud-score"><span class="fraud-orb"></span>' + p + '%</span>' +
+           '</span>';
+  }
   function nameHTML(name) { return esc(name) + fraudFlag(name); }
 
   function statusBadge(e) {

@@ -171,7 +171,31 @@ h1,h2,h3 { margin: 0; font-weight: 700; letter-spacing: -.01em; }
 .person__tap { display: flex; align-items: center; gap: 12px; flex: 1; min-width: 0; }
 .person__tap:active { opacity: .55; }
 .edit-hint { color: var(--muted); font-size: 12px; opacity: .55; margin-left: 2px; }
-.fraud-flag { font-size: .9em; margin-left: 2px; cursor: help; vertical-align: baseline; }
+/* Fraud-risk badge: flag + glowing red orb + risk %, shown beside a flagged name */
+.fraud-mark { display: inline-flex; align-items: center; gap: 4px; margin-left: 5px; vertical-align: middle; cursor: help; outline: none; font-size: .92em; }
+.fraud-score {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 1px 7px 1px 5px; border-radius: 999px;
+  background: radial-gradient(120% 120% at 30% 25%, #ff5d5d 0%, #e01010 55%, #b00505 100%);
+  color: #fff; font-size: 11px; font-weight: 800; line-height: 1.55; letter-spacing: .2px;
+  box-shadow: 0 1px 3px rgba(176,5,5,.5), inset 0 1px 0 rgba(255,255,255,.25);
+  transition: transform .15s ease, filter .15s ease;
+}
+/* the strong red circle, shining */
+.fraud-orb {
+  width: 9px; height: 9px; border-radius: 50%; flex: none;
+  background: radial-gradient(circle at 35% 30%, #ffe0e0 0%, #ff3b3b 45%, #c40000 100%);
+  animation: fraudShine 1.4s ease-out infinite;
+}
+@keyframes fraudShine {
+  0%   { box-shadow: 0 0 3px 1px rgba(255,40,40,.9), 0 0 0 0 rgba(255,0,0,.6); }
+  70%  { box-shadow: 0 0 9px 2px rgba(255,40,40,1),  0 0 0 7px rgba(255,0,0,0); }
+  100% { box-shadow: 0 0 3px 1px rgba(255,40,40,.9), 0 0 0 0 rgba(255,0,0,0); }
+}
+/* interactive: hover/focus lifts the badge and speeds the shine */
+.fraud-mark:hover .fraud-score, .fraud-mark:focus .fraud-score { transform: scale(1.12); filter: brightness(1.08); }
+.fraud-mark:hover .fraud-orb,   .fraud-mark:focus .fraud-orb   { animation-duration: .7s; }
+@media (prefers-reduced-motion: reduce) { .fraud-orb { animation: none; box-shadow: 0 0 5px 1px rgba(255,40,40,.9); } }
 .remember { display: flex; align-items: center; gap: 9px; margin: 2px 0 16px; font-size: 14px; color: var(--muted); cursor: pointer; user-select: none; }
 .remember input { width: 17px; height: 17px; accent-color: var(--primary); flex: none; cursor: pointer; }
 .avatar { width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center; color: #fff; font-weight: 700; font-size: 15px; flex: none; }
