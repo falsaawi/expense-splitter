@@ -36,10 +36,39 @@
   }
   function save() {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      // Auth is persisted separately (saveAuth) and deliberately kept OUT of this
+      // big cache: so an unchecked "Remember me" can't be resurrected from here,
+      // and so a cache too large to write never takes the login down with it.
+      var snapshot = {};
+      for (var k in state) { if (k !== "auth") snapshot[k] = state[k]; }
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(snapshot));
     } catch (e) {
       toast("Storage is full — try removing some invoice photos.", "bad");
     }
+  }
+
+  /* ---------- Auth persistence ----------
+     Kept in its own tiny slot, separate from the big trips/photos cache, so
+     a full cache can never evict the login (which used to cause surprise
+     logouts). "Remember me" → localStorage (survives closing the browser);
+     otherwise → sessionStorage (cleared when the tab/browser closes). */
+  var AUTH_KEY = STORAGE_KEY + ".auth";
+  function loadAuth() {
+    try {
+      var raw = localStorage.getItem(AUTH_KEY) || sessionStorage.getItem(AUTH_KEY);
+      if (raw) return JSON.parse(raw);
+    } catch (e) {}
+    return null;
+  }
+  function saveAuth(auth, remember) {
+    try {
+      var s = JSON.stringify(auth);
+      if (remember) { localStorage.setItem(AUTH_KEY, s); sessionStorage.removeItem(AUTH_KEY); }
+      else { sessionStorage.setItem(AUTH_KEY, s); localStorage.removeItem(AUTH_KEY); }
+    } catch (e) {}
+  }
+  function clearAuth() {
+    try { localStorage.removeItem(AUTH_KEY); sessionStorage.removeItem(AUTH_KEY); } catch (e) {}
   }
 
   /* ---------- Cloud sync (shared trips via the Neon-backed API) ----------
@@ -169,13 +198,23 @@
     });
   }
 
-  // Boot: join via ?join=CODE if present, then sync from the cloud.
+  // Boot: restore the remembered login, then sync from the cloud.
   function boot() {
-    if (state.auth && state.auth.name && state.auth.code) {
+    // Prefer the dedicated auth slot; fall back to legacy auth in the big blob
+    // (migrates already-signed-in users to the new slot on next login).
+    var saved = loadAuth() || (state.auth && state.auth.name && state.auth.code ? state.auth : null);
+    if (saved && saved.name && saved.code) {
+      state.auth = saved;
       render(); // show cached trips while we refresh
-      doLogin(state.auth.name, state.auth.code, function (ok) {
-        if (!ok) { state.auth = null; state.trips = []; save(); render(); }
-        else { view = { name: "trips" }; render(); startPolling(); }
+      doLogin(saved.name, saved.code, saved.remember !== false, function (ok, reason) {
+        if (ok) { view = { name: "trips" }; render(); startPolling(); }
+        else if (reason === "invalid") {
+          // Server says the credentials are no longer valid → really sign out.
+          clearAuth(); state.auth = null; state.trips = []; save(); render();
+        } else {
+          // Network blip on startup — stay signed in, keep cached trips, retry via polling.
+          startPolling();
+        }
       });
     } else {
       state.auth = null;
@@ -184,15 +223,18 @@
   }
 
   // Sign in with name + 4-digit code; loads only that member's trips (all if admin).
-  function doLogin(name, code, cb) {
+  // remember=false keeps the session only until the browser closes.
+  function doLogin(name, code, remember, cb) {
+    var keep = remember !== false;
     api("login", { name: name, code: code }).then(function (res) {
       if (res && res.ok) {
-        state.auth = { name: res.name, code: String(code), isAdmin: !!res.isAdmin };
+        state.auth = { name: res.name, code: String(code), isAdmin: !!res.isAdmin, remember: keep };
         state.trips = res.trips || [];
+        saveAuth(state.auth, keep);
         save();
         if (cb) cb(true);
-      } else { if (cb) cb(false); }
-    }).catch(function () { if (cb) cb(false); });
+      } else { if (cb) cb(false, "invalid"); }
+    }).catch(function () { if (cb) cb(false, "network"); });
   }
 
   function renderLogin() {
@@ -209,6 +251,7 @@
             '<div class="hint" style="margin:6px 0 16px">Enter your name and the 4-digit code you were given.</div>' +
             '<div class="field"><label>Your name</label><input id="loginName" type="text" autocomplete="off" enterkeyhint="next" placeholder="e.g. Fahad" /></div>' +
             '<div class="field"><label>4-digit code</label><input id="loginCode" type="text" inputmode="numeric" maxlength="4" autocomplete="off" enterkeyhint="go" placeholder="••••" /></div>' +
+            '<label class="remember"><input id="rememberMe" type="checkbox" checked /> <span>Keep me signed in on this device</span></label>' +
             '<button class="btn btn--block btn--lg" data-action="do-login">Sign in</button>' +
           '</div>' +
           '<div class="muted-note" style="margin-top:14px">Don’t have a code? Ask Fahad for yours.</div>' +
@@ -454,7 +497,6 @@
           '<div class="empty__title">Start your first trip</div>' +
           '<div class="empty__text">Create a trip for each city. Add who\'s there, log each dinner with the invoice photo, and we\'ll split it fairly.</div>' +
           '<button class="btn btn--lg" data-action="new-trip">＋ New trip</button>' +
-          '<div style="margin-top:14px"><button class="linkbtn" data-action="seed-demo">or load a sample trip</button></div>' +
         '</div>';
     } else {
       body = '<button class="overall-cta" data-action="overall">📊 Overall settlement across all trips<span class="chev">›</span></button>' +
@@ -1361,13 +1403,16 @@
       sheet.querySelector('[data-m="export"]').addEventListener("click", function () { closeSheet(); exportData(null); });
       sheet.querySelector('[data-m="logout"]').addEventListener("click", function () {
         closeSheet();
-        if (confirm("Log out of TripSplit?")) { state.auth = null; state.trips = []; save(); stopPolling(); view = { name: "trips" }; render(); }
+        if (confirm("Log out of TripSplit?")) { clearAuth(); state.auth = null; state.trips = []; save(); stopPolling(); view = { name: "trips" }; render(); }
       });
     });
   }
 
   function exportData(trip) {
-    var data = trip ? { trips: [trip], lastCurrency: state.lastCurrency } : state;
+    // Never include auth (name + code) in an exported backup.
+    var data = trip
+      ? { trips: [trip], lastCurrency: state.lastCurrency }
+      : { trips: state.trips, lastCurrency: state.lastCurrency, rates: state.rates };
     var blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
     var url = URL.createObjectURL(blob);
     var a = document.createElement("a");
@@ -1378,38 +1423,6 @@
     toast("Backup downloaded", "good");
   }
 
-  /* ---------- Demo data ---------- */
-  function seedDemo() {
-    var pid = function () { return uid(); };
-    var a = pid(), b = pid(), c = pid(), d = pid();
-    var trip = {
-      id: uid(), code: shortCode(), name: "Barcelona", currency: "EUR", emoji: "🌆", createdAt: Date.now(),
-      people: [
-        { id: a, name: "Omar" }, { id: b, name: "Sara" },
-        { id: c, name: "Liam" }, { id: d, name: "Nadia" }
-      ],
-      expenses: [
-        { id: uid(), title: "Tapas dinner at El Xampanyet", amount: 184.50, date: todayISO(),
-          paidBy: a, attendees: [a, b, c, d], photo: null, note: "Shared lots of plates", createdAt: Date.now(), emoji: "🍤" },
-        { id: uid(), title: "Paella by the beach", amount: 96.00, date: todayISO(),
-          paidBy: b, attendees: [a, b, d], photo: null, note: "Liam skipped this one", createdAt: Date.now() - 1000, emoji: "🥘" },
-        { id: uid(), title: "Late-night drinks", amount: 54.00, date: shiftDate(-1),
-          paidBy: c, attendees: [b, c, d], photo: null, note: "", createdAt: Date.now() - 2000, emoji: "🍷" }
-      ]
-    };
-    state.trips.push(trip);
-    state.lastCurrency = "EUR";
-    push("saveTripFull", { trip: trip });
-    save();
-    view = { name: "trip", tripId: trip.id, tab: "expenses" };
-    render();
-    toast("Sample trip loaded ✨", "good");
-  }
-  function shiftDate(days) {
-    var d = new Date(); d.setDate(d.getDate() + days);
-    var off = d.getTimezoneOffset();
-    return new Date(d.getTime() - off * 60000).toISOString().slice(0, 10);
-  }
 
   /* ============================================================
      People add/remove
@@ -1443,20 +1456,21 @@
     switch (action) {
       case "do-login": {
         var nmEl = document.getElementById("loginName"), cdEl = document.getElementById("loginCode");
+        var rmEl = document.getElementById("rememberMe");
         var nm = (nmEl && nmEl.value || "").trim(), cd = (cdEl && cdEl.value || "").trim();
+        var remember = rmEl ? !!rmEl.checked : true;
         if (!nm || !cd) { toast("Enter your name and code", "bad"); break; }
         toast("Signing in…");
-        doLogin(nm, cd, function (ok) {
+        doLogin(nm, cd, remember, function (ok) {
           if (ok) { view = { name: "trips" }; render(); stopPolling(); startPolling(); toast("Welcome, " + state.auth.name + " 👋", "good"); }
           else { toast("Wrong name or code", "bad"); }
         });
         break;
       }
       case "logout":
-        if (confirm("Log out of TripSplit?")) { state.auth = null; state.trips = []; save(); stopPolling(); view = { name: "trips" }; render(); }
+        if (confirm("Log out of TripSplit?")) { clearAuth(); state.auth = null; state.trips = []; save(); stopPolling(); view = { name: "trips" }; render(); }
         break;
       case "new-trip": tripFormSheet(null); break;
-      case "seed-demo": seedDemo(); break;
       case "menu": appMenuSheet(); break;
       case "overall": view = { name: "overall" }; render(); break;
       case "back-home": view = { name: "trips" }; render(); break;
@@ -1525,5 +1539,5 @@
   boot();
 
   // expose a tiny hook for the preview/demo tooling
-  window.__tripsplit = { seedDemo: seedDemo, state: function () { return state; }, render: render, go: function (v) { view = v; render(); } };
+  window.__tripsplit = { state: function () { return state; }, render: render, go: function (v) { view = v; render(); } };
 })();
