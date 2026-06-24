@@ -153,12 +153,20 @@ h1,h2,h3 { margin: 0; font-weight: 700; letter-spacing: -.01em; }
 .pill--pend { background: #fff4e6; color: #c2700b; }
 .pill--ok { background: var(--good-soft); color: #047857; }
 .pill--ret { background: var(--bad-soft); color: var(--bad); }
-.pill--flag { background: #ffe7d6; color: #c2410c; }
+.pill--flag { background: #ffe7d6; color: #c2410c; animation: flagGlow 1.7s ease-in-out infinite; }
+@keyframes flagGlow {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(226,74,12,0); }
+  50%      { box-shadow: 0 0 9px 1px rgba(226,74,12,.6); }
+}
 .status-banner { border-radius: 13px; padding: 13px 15px; font-weight: 700; font-size: 14.5px; margin-bottom: 14px; }
 .status-banner.pend { background: #fff4e6; color: #b9690a; border: 1px solid #ffe2bd; }
 .status-banner.ok { background: var(--good-soft); color: #047857; border: 1px solid #b9f0d6; }
 .status-banner.bad { background: var(--bad-soft); color: var(--bad); border: 1px solid #fecdd0; }
-.status-banner.flag { background: #fff1e8; color: #c2410c; border: 1px solid #ffd6bd; }
+.status-banner.flag { background: #fff1e8; color: #c2410c; border: 1px solid #ffd6bd; animation: bannerGlow 1.8s ease-in-out infinite; }
+@keyframes bannerGlow {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(226,74,12,0); }
+  50%      { box-shadow: 0 0 16px 2px rgba(226,74,12,.45); }
+}
 .status-msg { font-weight: 600; font-size: 13.5px; margin-top: 6px; }
 .btn--ok { background: var(--good); color: #fff; box-shadow: 0 6px 16px rgba(16,185,129,.3); }
 .btn--warn { background: #fff4e6; color: #b9690a; box-shadow: none; }
@@ -171,7 +179,9 @@ h1,h2,h3 { margin: 0; font-weight: 700; letter-spacing: -.01em; }
 .person__tap { display: flex; align-items: center; gap: 12px; flex: 1; min-width: 0; }
 .person__tap:active { opacity: .55; }
 .edit-hint { color: var(--muted); font-size: 12px; opacity: .55; margin-left: 2px; }
-/* Fraud-risk badge: flag + glowing red orb + risk %, shown beside a flagged name */
+/* Plain flag shown beside a flagged person's name */
+.fraud-flag { font-size: .92em; margin-left: 3px; cursor: help; vertical-align: baseline; }
+/* Fraud-risk badge: glowing red orb + risk %, shown beside the fraud-status label */
 .fraud-mark { display: inline-flex; align-items: center; gap: 4px; margin-left: 5px; vertical-align: middle; cursor: help; outline: none; font-size: .92em; }
 .fraud-score {
   display: inline-flex; align-items: center; gap: 4px;

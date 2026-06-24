@@ -628,23 +628,31 @@
     for (var i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
     return 65 + (h % 36); // 65..100 inclusive
   }
+  // Beside a name we show only the flag; the risk % lives with the fraud-status label.
   function fraudFlag(name) {
-    if (!isMarwan(name)) return '';
-    var p = fraudScore(name);
-    return ' <span class="fraud-mark" tabindex="0" role="img" aria-label="Fraud risk ' + p + ' percent, flagged for review"' +
-           ' title="Fraud risk ' + p + '% — flagged for review">' +
-             '🚩<span class="fraud-score"><span class="fraud-orb"></span>' + p + '%</span>' +
-           '</span>';
+    return isMarwan(name)
+      ? ' <span class="fraud-flag" title="Flagged for fraud — under review">🚩</span>'
+      : '';
   }
   function nameHTML(name) { return esc(name) + fraudFlag(name); }
 
-  function statusBadge(e) {
+  // Standalone glowing risk badge (orb + %), no flag emoji — for placing beside
+  // the "Fraud review" / "Fraud detected" labels, which already carry the 🚩.
+  function fraudScoreBadge(name) {
+    var p = fraudScore(name);
+    return ' <span class="fraud-mark" tabindex="0" role="img" aria-label="Fraud risk ' + p + ' percent"' +
+           ' title="Fraud risk ' + p + '% — flagged for review">' +
+             '<span class="fraud-score"><span class="fraud-orb"></span>' + p + '%</span>' +
+           '</span>';
+  }
+
+  function statusBadge(e, who) {
     var s = e.status || "autoapproved";
     if (s === "approved") return '<span class="pill pill--ok">✓ Approved</span>';
     if (s === "autoapproved") return '<span class="pill pill--ok">✓ Auto Approved</span>';
     if (s === "returned") return '<span class="pill pill--ret">⤺ Returned</span>';
     if (s === "declined") return '<span class="pill pill--ret">✕ Declined</span>';
-    if (s === "flagged") return '<span class="pill pill--flag">🚩 Fraud review</span>';
+    if (s === "flagged") return '<span class="pill pill--flag">🚩 Fraud review</span>' + fraudScoreBadge(who || e.submittedBy);
     return '<span class="pill pill--pend">⏳ Pending</span>';
   }
 
@@ -660,7 +668,7 @@
         '<div class="expense__body">' +
           '<div class="expense__title">' + esc(e.title) + '</div>' +
           '<div class="expense__meta">' +
-            statusBadge(e) +
+            statusBadge(e, personName(trip, e.paidBy)) +
             '<span class="pill">' + nameHTML(personName(trip, e.paidBy)) + ' paid</span>' +
             '<span>· ' + n + (n === 1 ? " person" : " people") + '</span>' +
             (e.photo ? '<span class="pill pill--cam">📷</span>' : '') +
@@ -1306,7 +1314,7 @@
       : st === "autoapproved" ? '<div class="status-banner ok">✓ Auto Approved</div>'
       : st === "returned"     ? '<div class="status-banner bad">⤺ Returned by higher management' + smsg + '</div>'
       : st === "declined"     ? '<div class="status-banner bad">✕ Declined by higher management' + smsg + '</div>'
-      : st === "flagged"      ? '<div class="status-banner flag">🚩 Fraud detected — needs to be reviewed by higher management</div>'
+      : st === "flagged"      ? '<div class="status-banner flag">🚩 Fraud detected — needs to be reviewed by higher management' + fraudScoreBadge(personName(trip, e.paidBy)) + '</div>'
       :                         '<div class="status-banner pend">⏳ Pending approval from higher management</div>';
     var adminActions = isAdmin
       ? '<div class="section-title">Higher management</div>' +
