@@ -265,6 +265,25 @@ export default async function handler(req, res) {
         return res.status(200).json({ ok: true });
       }
 
+      // Create a login for a member — admin only (verified by admin name + code).
+      // Non-admin only; never clobbers an existing member.
+      case "addMember": {
+        const adminKey = String(body.adminName || "").trim().toLowerCase();
+        const adminCode = String(body.adminCode || "").trim();
+        const a = await sql`SELECT is_admin FROM members WHERE name_key = ${adminKey} AND code = ${adminCode}`;
+        if (!a.length || !a[0].is_admin) return res.status(200).json({ ok: false, error: "not admin" });
+        const disp = String(body.name || "").trim();
+        const key = disp.toLowerCase();
+        const code = String(body.code || "").trim();
+        if (!key || !/^\d{4}$/.test(code)) return res.status(200).json({ ok: false, error: "need name + 4-digit code" });
+        const ins = await sql`INSERT INTO members (name_key, name, code, is_admin)
+          VALUES (${key}, ${disp}, ${code}, false)
+          ON CONFLICT (name_key) DO NOTHING
+          RETURNING name_key`;
+        if (!ins.length) return res.status(200).json({ ok: false, exists: true });
+        return res.status(200).json({ ok: true, name: disp });
+      }
+
       default:
         return res.status(400).json({ error: "Unknown op: " + op });
     }
