@@ -714,10 +714,9 @@
   // The risk % is a deterministic "random" value in 65–100, derived from the
   // name so it stays stable across the ~12 places a name is rendered (a truly
   // per-render random would show different numbers for the same person at once).
-  function fraudScore(name) {
-    var s = String(name || "").trim().toLowerCase(), h = 0;
-    for (var i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
-    return 65 + (h % 36); // 65..100 inclusive
+  // Random fraud-risk score in 65–100%, re-rolled each time it's shown.
+  function fraudScore() {
+    return 65 + Math.floor(Math.random() * 36); // 65..100 inclusive
   }
   // Beside a name we show only the flag; the risk % lives with the fraud-status label.
   function fraudFlag(name) {
