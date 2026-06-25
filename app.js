@@ -34,16 +34,40 @@
     } catch (e) {}
     return { trips: [], lastCurrency: "EUR" };
   }
+  // Build the localStorage snapshot (everything except auth, which is persisted
+  // separately so a too-large cache can never take the login down with it).
+  // When `lean` is true, drop base64 invoice photos — they live in the cloud and
+  // are by far the largest thing here, so dropping them keeps us under quota.
+  function cacheSnapshot(lean) {
+    var snap = {};
+    for (var k in state) {
+      if (k === "auth") continue;
+      if (lean && k === "trips") {
+        snap.trips = (state.trips || []).map(function (t) {
+          return Object.assign({}, t, {
+            expenses: (t.expenses || []).map(function (e) {
+              return e.photo ? Object.assign({}, e, { photo: null }) : e;
+            })
+          });
+        });
+      } else {
+        snap[k] = state[k];
+      }
+    }
+    return snap;
+  }
   function save() {
     try {
-      // Auth is persisted separately (saveAuth) and deliberately kept OUT of this
-      // big cache: so an unchecked "Remember me" can't be resurrected from here,
-      // and so a cache too large to write never takes the login down with it.
-      var snapshot = {};
-      for (var k in state) { if (k !== "auth") snapshot[k] = state[k]; }
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(snapshot));
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(cacheSnapshot(false)));
     } catch (e) {
-      toast("Storage is full — try removing some invoice photos.", "bad");
+      // Quota exceeded (usually base64 invoice photos). Retry WITHOUT photos so
+      // trips/people/expenses still persist locally and actions like adding a
+      // person never fail — photos remain in memory and reload from the cloud.
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(cacheSnapshot(true)));
+      } catch (e2) {
+        toast("Storage is full — try removing some invoice photos.", "bad");
+      }
     }
   }
 
