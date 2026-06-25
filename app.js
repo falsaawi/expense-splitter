@@ -34,15 +34,13 @@
     } catch (e) {}
     return { trips: [], lastCurrency: "EUR" };
   }
-  // Build the localStorage snapshot (everything except auth, which is persisted
-  // separately so a too-large cache can never take the login down with it).
-  // When `lean` is true, drop base64 invoice photos — they live in the cloud and
-  // are by far the largest thing here, so dropping them keeps us under quota.
-  function cacheSnapshot(lean) {
+  // localStorage holds metadata only. Invoice photos are kept OUT of it (they're
+  // large base64 blobs) and stored in IndexedDB instead — see mirrorPhotos below.
+  function cacheSnapshot() {
     var snap = {};
     for (var k in state) {
       if (k === "auth") continue;
-      if (lean && k === "trips") {
+      if (k === "trips") {
         snap.trips = (state.trips || []).map(function (t) {
           return Object.assign({}, t, {
             expenses: (t.expenses || []).map(function (e) {
@@ -58,17 +56,85 @@
   }
   function save() {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(cacheSnapshot(false)));
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(cacheSnapshot()));
     } catch (e) {
-      // Quota exceeded (usually base64 invoice photos). Retry WITHOUT photos so
-      // trips/people/expenses still persist locally and actions like adding a
-      // person never fail — photos remain in memory and reload from the cloud.
-      try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(cacheSnapshot(true)));
-      } catch (e2) {
-        toast("Storage is full — try removing some invoice photos.", "bad");
-      }
+      // Metadata-only, so this should essentially never fire now.
+      toast("Storage is full — try removing some invoice photos.", "bad");
     }
+    scheduleMirror(); // persist invoice photos to IndexedDB (large quota)
+  }
+
+  /* ---------- Invoice photos → IndexedDB ----------
+     Photos are large base64 blobs; localStorage (~5MB) overflows fast. We mirror
+     them to IndexedDB (hundreds of MB) keyed by expense id, prune removed ones,
+     and rehydrate into memory on load so they appear even offline. */
+  var IDB_NAME = "tripsplit", IDB_STORE = "photos", _idb = null;
+  function idbOpen() {
+    if (_idb) return _idb;
+    _idb = new Promise(function (resolve, reject) {
+      if (!window.indexedDB) { reject(new Error("no-idb")); return; }
+      var req = indexedDB.open(IDB_NAME, 1);
+      req.onupgradeneeded = function () {
+        var db = req.result;
+        if (!db.objectStoreNames.contains(IDB_STORE)) db.createObjectStore(IDB_STORE);
+      };
+      req.onsuccess = function () { resolve(req.result); };
+      req.onerror = function () { reject(req.error); };
+    });
+    _idb.catch(function () { _idb = null; }); // allow a later retry if open failed
+    return _idb;
+  }
+  function idbGetAll() {
+    return idbOpen().then(function (db) {
+      return new Promise(function (resolve) {
+        var out = {}, tx = db.transaction(IDB_STORE, "readonly"), st = tx.objectStore(IDB_STORE);
+        var req = st.openCursor();
+        req.onsuccess = function () { var c = req.result; if (c) { out[c.key] = c.value; c.continue(); } else resolve(out); };
+        req.onerror = function () { resolve(out); };
+      });
+    });
+  }
+  // Upsert every current photo, delete keys no longer referenced.
+  function idbSync(currentMap) {
+    return idbOpen().then(function (db) {
+      return new Promise(function (resolve) {
+        var tx = db.transaction(IDB_STORE, "readwrite"), st = tx.objectStore(IDB_STORE);
+        var kReq = st.getAllKeys();
+        kReq.onsuccess = function () {
+          (kReq.result || []).forEach(function (k) { if (!(k in currentMap)) st.delete(k); });
+        };
+        Object.keys(currentMap).forEach(function (id) { st.put(currentMap[id], id); });
+        tx.oncomplete = function () { resolve(true); };
+        tx.onerror = function () { resolve(false); };
+        tx.onabort = function () { resolve(false); };
+      });
+    }).catch(function () { return false; });
+  }
+  var _mirrorTimer = null;
+  function scheduleMirror() {
+    if (!window.indexedDB) return;
+    if (_mirrorTimer) clearTimeout(_mirrorTimer);
+    _mirrorTimer = setTimeout(function () {
+      _mirrorTimer = null;
+      var current = {};
+      (state.trips || []).forEach(function (t) {
+        (t.expenses || []).forEach(function (e) { if (e.photo) current[e.id] = e.photo; });
+      });
+      idbSync(current);
+    }, 700);
+  }
+  // Restore photos from IDB for expenses missing one in memory (e.g. offline load).
+  function hydratePhotos() {
+    if (!window.indexedDB) return;
+    idbGetAll().then(function (map) {
+      var changed = false;
+      (state.trips || []).forEach(function (t) {
+        (t.expenses || []).forEach(function (e) {
+          if (!e.photo && map[e.id]) { e.photo = map[e.id]; changed = true; }
+        });
+      });
+      if (changed) render();
+    }).catch(function () {});
   }
 
   /* ---------- Auth persistence ----------
@@ -230,6 +296,7 @@
     if (saved && saved.name && saved.code) {
       state.auth = saved;
       render(); // show cached trips while we refresh
+      hydratePhotos(); // restore cached invoice photos from IndexedDB (offline-friendly)
       doLogin(saved.name, saved.code, saved.remember !== false, function (ok, reason) {
         if (ok) { view = { name: "trips" }; render(); startPolling(); }
         else if (reason === "invalid") {
