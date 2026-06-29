@@ -336,51 +336,56 @@ export default async function handler(req, res) {
         return res.status(200).json({ ok: true, settlements: await overallSettlements() });
       }
 
-      // Propose a settlement — caller must be one of the two parties (by name key).
+      // Propose a settlement — a party (by name key) proposes; an admin may
+      // record any pair, and (with confirm:true) settle it in one step.
       case "proposeSettlement": {
         const k = String(body.name || "").trim().toLowerCase();
         const c = String(body.code || "").trim();
-        const mm = await sql`SELECT name FROM members WHERE name_key = ${k} AND code = ${c}`;
+        const mm = await sql`SELECT name, is_admin FROM members WHERE name_key = ${k} AND code = ${c}`;
         if (!mm.length) return res.status(200).json({ ok: false, error: "not a member" });
+        const isAdmin = !!mm[0].is_admin;
         const from = String(body.from || "").trim().toLowerCase();
         const to = String(body.to || "").trim().toLowerCase();
         const amount = Number(body.amount) || 0;
         if (!from || !to || from === to || !(amount > 0)) return res.status(200).json({ ok: false, error: "bad input" });
-        if (k !== from && k !== to) return res.status(200).json({ ok: false, error: "not a party" });
+        if (!isAdmin && k !== from && k !== to) return res.status(200).json({ ok: false, error: "not a party" });
         const id = String(body.id || ("s" + Date.now()));
-        await sql`INSERT INTO settlements (id, trip_id, from_person, to_person, amount, status, proposed_by, created_at)
-          VALUES (${id}, ${OVERALL}, ${from}, ${to}, ${amount}, 'proposed', ${mm[0].name}, ${Date.now()})
+        const confirmed = isAdmin && body.confirm;
+        await sql`INSERT INTO settlements (id, trip_id, from_person, to_person, amount, status, proposed_by, confirmed_by, created_at, confirmed_at)
+          VALUES (${id}, ${OVERALL}, ${from}, ${to}, ${amount}, ${confirmed ? "confirmed" : "proposed"}, ${mm[0].name}, ${confirmed ? mm[0].name : null}, ${Date.now()}, ${confirmed ? Date.now() : null})
           ON CONFLICT (id) DO NOTHING`;
         return res.status(200).json({ ok: true, id });
       }
 
-      // Confirm a proposed settlement — caller must be the OTHER party (not the proposer).
+      // Confirm a settlement — the OTHER party, or an admin (override).
       case "confirmSettlement": {
         const k = String(body.name || "").trim().toLowerCase();
         const c = String(body.code || "").trim();
-        const mm = await sql`SELECT name FROM members WHERE name_key = ${k} AND code = ${c}`;
+        const mm = await sql`SELECT name, is_admin FROM members WHERE name_key = ${k} AND code = ${c}`;
         if (!mm.length) return res.status(200).json({ ok: false, error: "not a member" });
+        const isAdmin = !!mm[0].is_admin;
         const id = String(body.id || "");
         const rows = await sql`SELECT * FROM settlements WHERE id = ${id} AND trip_id = ${OVERALL}`;
         if (!rows.length) return res.status(200).json({ ok: false, error: "not found" });
         const s = rows[0];
-        if (k !== String(s.from_person) && k !== String(s.to_person)) return res.status(200).json({ ok: false, error: "not a party" });
-        if (String(s.proposed_by || "").trim().toLowerCase() === k) return res.status(200).json({ ok: false, error: "the other party must confirm" });
+        if (!isAdmin && k !== String(s.from_person) && k !== String(s.to_person)) return res.status(200).json({ ok: false, error: "not a party" });
+        if (!isAdmin && String(s.proposed_by || "").trim().toLowerCase() === k) return res.status(200).json({ ok: false, error: "the other party must confirm" });
         await sql`UPDATE settlements SET status = 'confirmed', confirmed_by = ${mm[0].name}, confirmed_at = ${Date.now()} WHERE id = ${id}`;
         return res.status(200).json({ ok: true });
       }
 
-      // Cancel / undo a settlement — either party may cancel.
+      // Cancel / undo a settlement — either party, or an admin.
       case "cancelSettlement": {
         const k = String(body.name || "").trim().toLowerCase();
         const c = String(body.code || "").trim();
-        const mm = await sql`SELECT 1 FROM members WHERE name_key = ${k} AND code = ${c}`;
+        const mm = await sql`SELECT is_admin FROM members WHERE name_key = ${k} AND code = ${c}`;
         if (!mm.length) return res.status(200).json({ ok: false, error: "not a member" });
+        const isAdmin = !!mm[0].is_admin;
         const id = String(body.id || "");
         const rows = await sql`SELECT * FROM settlements WHERE id = ${id} AND trip_id = ${OVERALL}`;
         if (!rows.length) return res.status(200).json({ ok: true });
         const s = rows[0];
-        if (k !== String(s.from_person) && k !== String(s.to_person)) return res.status(200).json({ ok: false, error: "not a party" });
+        if (!isAdmin && k !== String(s.from_person) && k !== String(s.to_person)) return res.status(200).json({ ok: false, error: "not a party" });
         await sql`DELETE FROM settlements WHERE id = ${id}`;
         return res.status(200).json({ ok: true });
       }
