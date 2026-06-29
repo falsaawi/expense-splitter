@@ -1140,6 +1140,7 @@
     if (groups.length) {
       var sar = computeOverallSAR();
       var myKey = myNameKey();
+      var isAdmin = state.auth && state.auth.isAdmin;
       var nameByKey = {}; sar.rows.forEach(function (r) { nameByKey[r.key] = r.name; });
       var pendingS = {};
       (state.settlements || []).forEach(function (s) { if (s.status === "proposed") pendingS[s.from + "|" + s.to] = s; });
@@ -1147,19 +1148,23 @@
         ? '<div class="card" style="text-align:center;padding:20px"><div style="font-size:30px">🎉</div><div style="font-weight:700;margin-top:6px">Everyone is settled up</div></div>'
         : '<div class="stack">' + sar.settle.map(function (t) {
             var amParty = myKey && (myKey === t.fromKey || myKey === t.toKey);
+            var canAct = amParty || isAdmin;
             var pend = pendingS[t.fromKey + "|" + t.toKey];
             var action = "";
             if (pend) {
               var iProposed = myKey && String(pend.proposedBy || "").trim().toLowerCase() === myKey;
               action = '<div class="settle__foot">' +
-                '<span class="settle__pending">⏳ ' + esc(pend.proposedBy || "Someone") + ' marked this paid' + (iProposed ? " — awaiting the other party" : "") + '</span>' +
-                (amParty && !iProposed ? '<button class="btn btn--ok btn--xs" data-action="confirm-settlement" data-id="' + esc(pend.id) + '">✓ Confirm</button>' : '') +
-                (amParty ? '<button class="btn btn--ghost btn--xs" data-action="cancel-settlement" data-id="' + esc(pend.id) + '">Cancel</button>' : '') +
+                '<span class="settle__pending">⏳ ' + esc(pend.proposedBy || "Someone") + ' marked this paid' + (iProposed && !isAdmin ? " — awaiting the other party" : "") + '</span>' +
+                (((amParty && !iProposed) || isAdmin) ? '<button class="btn btn--ok btn--xs" data-action="confirm-settlement" data-id="' + esc(pend.id) + '">✓ Confirm</button>' : '') +
+                (canAct ? '<button class="btn btn--ghost btn--xs" data-action="cancel-settlement" data-id="' + esc(pend.id) + '">Cancel</button>' : '') +
                 '</div>';
             } else if (amParty) {
               var lbl = myKey === t.fromKey ? "I paid this" : "Mark received";
               action = '<div class="settle__foot">' +
                 '<button class="btn btn--soft btn--xs" data-action="propose-settlement" data-from="' + esc(t.fromKey) + '" data-to="' + esc(t.toKey) + '" data-amount="' + t.amount + '">' + lbl + '</button></div>';
+            } else if (isAdmin) {
+              action = '<div class="settle__foot">' +
+                '<button class="btn btn--soft btn--xs" data-action="admin-settle" data-from="' + esc(t.fromKey) + '" data-to="' + esc(t.toKey) + '" data-amount="' + t.amount + '">Mark settled</button></div>';
             }
             return '<div class="settle-row' + (pend ? " pending" : "") + '">' +
                 '<div class="settle__main">' +
@@ -1173,7 +1178,7 @@
       var sarDone = confirmedS.length
         ? '<div class="section-title" style="margin-top:20px">✓ Settled payments</div><div class="stack">' + confirmedS.map(function (s) {
             var fromNm = nameByKey[s.from] || s.from, toNm = nameByKey[s.to] || s.to;
-            var amParty = myKey && (myKey === s.from || myKey === s.to);
+            var amParty = isAdmin || (myKey && (myKey === s.from || myKey === s.to));
             return '<div class="settle-row done">' +
               '<div class="settle__main">' +
                 '<div class="avatar" style="background:' + colorFor(s.from) + '">' + esc(initials(fromNm)) + '</div>' +
@@ -1615,6 +1620,23 @@
     save(); render();
     api("cancelSettlement", { id: id, name: state.auth && state.auth.name, code: state.auth && state.auth.code }).catch(function () {});
   }
+  // Admin records a payment as settled in one step (no second confirmation needed).
+  function adminSettle(fromKey, toKey, amount) {
+    var nm = (state.auth && state.auth.name) || "";
+    var s = { id: uid(), from: fromKey, to: toKey, amount: amount, status: "confirmed",
+              proposedBy: nm, confirmedBy: nm, createdAt: Date.now() };
+    state.settlements.push(s);
+    save(); render();
+    toast("Marked as settled ✓", "good");
+    api("proposeSettlement", { id: s.id, from: fromKey, to: toKey, amount: amount, confirm: true,
+      name: state.auth && state.auth.name, code: state.auth && state.auth.code })
+      .then(function (r) {
+        if (r && r.ok === false) {
+          state.settlements = state.settlements.filter(function (x) { return x.id !== s.id; });
+          render(); toast("Couldn't record that", "bad");
+        }
+      }).catch(function () {});
+  }
 
   /* ---------- Move an expense to another city ---------- */
   function convertAmount(amount, fromCur, toCur) {
@@ -1825,6 +1847,9 @@
         break;
       case "confirm-settlement": confirmSettlement(id); break;
       case "cancel-settlement": cancelSettlement(id); break;
+      case "admin-settle":
+        adminSettle(el.getAttribute("data-from"), el.getAttribute("data-to"), parseFloat(el.getAttribute("data-amount")));
+        break;
     }
   });
 
