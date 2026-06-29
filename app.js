@@ -25,6 +25,7 @@
   var state = load();
   if (!state.rates || typeof state.rates !== "object") state.rates = {};
   var view = { name: "trips", tripId: null, tab: "expenses" };
+  var memberDirectory = []; // names of all registered users (for the add-person dropdown)
 
   /* ---------- Persistence ---------- */
   function load() {
@@ -298,7 +299,7 @@
       render(); // show cached trips while we refresh
       hydratePhotos(); // restore cached invoice photos from IndexedDB (offline-friendly)
       doLogin(saved.name, saved.code, saved.remember !== false, function (ok, reason) {
-        if (ok) { view = { name: "trips" }; render(); startPolling(); }
+        if (ok) { view = { name: "trips" }; render(); startPolling(); refreshMemberDirectory(); }
         else if (reason === "invalid") {
           // Server says the credentials are no longer valid → really sign out.
           clearAuth(); state.auth = null; state.trips = []; save(); render();
@@ -326,6 +327,17 @@
         if (cb) cb(true);
       } else { if (cb) cb(false, "invalid"); }
     }).catch(function () { if (cb) cb(false, "network"); });
+  }
+
+  // Pull the directory of registered user names (for the add-person dropdown).
+  function refreshMemberDirectory() {
+    if (!(state.auth && state.auth.name && state.auth.code)) return;
+    api("listMemberNames", { name: state.auth.name, code: state.auth.code }).then(function (r) {
+      if (r && r.ok && Array.isArray(r.names)) {
+        memberDirectory = r.names;
+        if (view.name === "trip" && view.tab === "people") render();
+      }
+    }).catch(function () {});
   }
 
   function renderLogin() {
@@ -434,9 +446,23 @@
       if (bal[e.paidBy] !== undefined) bal[e.paidBy] += e.amount;   // payer fronted the whole bill
       attendees.forEach(function (id) { bal[id] -= share; });        // each attendee owes their share
     });
+    // confirmed settlements are real money moved: the payer (from) owes less,
+    // the payee (to) is owed less — so the suggested payment drops off.
+    (trip.settlements || []).forEach(function (s) {
+      if (s.status !== "confirmed") return;
+      if (bal[s.from] !== undefined) bal[s.from] += s.amount;
+      if (bal[s.to] !== undefined) bal[s.to] -= s.amount;
+    });
     // round to cents to avoid floating dust
     Object.keys(bal).forEach(function (k) { bal[k] = Math.round(bal[k] * 100) / 100; });
     return bal;
+  }
+  // The trip person matching the logged-in user (by name), or null.
+  function myPersonId(trip) {
+    var nm = state.auth && state.auth.name ? String(state.auth.name).trim().toLowerCase() : "";
+    if (!nm) return null;
+    var p = (trip.people || []).filter(function (x) { return String(x.name || "").trim().toLowerCase() === nm; })[0];
+    return p ? p.id : null;
   }
 
   // Per-person breakdown: total paid (fronted) vs share (what they consumed on
@@ -791,13 +817,24 @@
       );
     }).join("") + '</div>' : '<div class="muted-note">No one added yet.</div>';
 
+    var pool = existingNamesPool(trip);
+    var picker = pool.length
+      ? '<div class="addrow addrow--picker">' +
+          '<select id="existingPicker" class="picker">' +
+            '<option value="">＋ Add an existing person…</option>' +
+            pool.map(function (n) { return '<option value="' + esc(n) + '">' + esc(n) + '</option>'; }).join("") +
+          '</select>' +
+        '</div>'
+      : '';
+
     return (
       '<div class="addrow">' +
-        '<input id="newPerson" type="text" placeholder="Add a name…" autocomplete="off" enterkeyhint="done" />' +
+        '<input id="newPerson" type="text" placeholder="Type a new name…" autocomplete="off" enterkeyhint="done" />' +
         '<button class="btn" data-action="add-person">Add</button>' +
       '</div>' +
+      picker +
       list +
-      (people.length ? '<div class="hint" style="text-align:center;margin-top:16px">Tap a name to rename — use the same spelling as in other cities to link the same person across trips.</div>' : '')
+      (people.length ? '<div class="hint" style="text-align:center;margin-top:16px">Type a new name, or pick someone from the dropdown — same spelling links the same person across cities.</div>' : '')
     );
   }
 
@@ -853,6 +890,11 @@
         null, null);
     }
     var tx = settle(bal);
+    var myId = myPersonId(trip);
+    var myNameLc = state.auth && state.auth.name ? String(state.auth.name).trim().toLowerCase() : "";
+    // pending (proposed) settlements, keyed by "from|to"
+    var pending = {};
+    (trip.settlements || []).forEach(function (s) { if (s.status === "proposed") pending[s.from + "|" + s.to] = s; });
 
     var settleHTML;
     if (!tx.length) {
@@ -861,15 +903,49 @@
         '<div class="hint">No payments needed.</div></div>';
     } else {
       settleHTML = '<div class="stack">' + tx.map(function (t) {
+        var amParty = myId && (myId === t.from || myId === t.to);
+        var pend = pending[t.from + "|" + t.to];
+        var action = "";
+        if (pend) {
+          var iProposed = myNameLc && String(pend.proposedBy || "").trim().toLowerCase() === myNameLc;
+          action = '<div class="settle__foot">' +
+            '<span class="settle__pending">⏳ ' + esc(pend.proposedBy || "Someone") + ' marked this paid' + (iProposed ? " — awaiting the other party" : "") + '</span>' +
+            (amParty && !iProposed ? '<button class="btn btn--ok btn--xs" data-action="confirm-settlement" data-id="' + esc(pend.id) + '">✓ Confirm</button>' : '') +
+            (amParty ? '<button class="btn btn--ghost btn--xs" data-action="cancel-settlement" data-id="' + esc(pend.id) + '">Cancel</button>' : '') +
+            '</div>';
+        } else if (amParty) {
+          var lbl = myId === t.from ? "I paid this" : "Mark received";
+          action = '<div class="settle__foot">' +
+            '<button class="btn btn--soft btn--xs" data-action="propose-settlement" data-from="' + esc(t.from) + '" data-to="' + esc(t.to) + '" data-amount="' + t.amount + '">' + lbl + '</button></div>';
+        }
         return (
-          '<div class="settle">' +
-            '<div class="avatar" style="background:' + colorFor(t.from) + '">' + esc(initials(personName(trip, t.from))) + '</div>' +
-            '<div class="settle__names"><b>' + nameHTML(personName(trip, t.from)) + '</b> <span class="settle__arrow">→</span> <b>' + nameHTML(personName(trip, t.to)) + '</b></div>' +
-            '<div class="settle__amt">' + money(t.amount, trip.currency) + '</div>' +
+          '<div class="settle-row' + (pend ? " pending" : "") + '">' +
+            '<div class="settle__main">' +
+              '<div class="avatar" style="background:' + colorFor(t.from) + '">' + esc(initials(personName(trip, t.from))) + '</div>' +
+              '<div class="settle__names"><b>' + nameHTML(personName(trip, t.from)) + '</b> <span class="settle__arrow">→</span> <b>' + nameHTML(personName(trip, t.to)) + '</b></div>' +
+              '<div class="settle__amt">' + money(t.amount, trip.currency) + '</div>' +
+            '</div>' + action +
           '</div>'
         );
       }).join("") + '</div>';
     }
+
+    // confirmed settlements — money already moved
+    var done = (trip.settlements || []).filter(function (s) { return s.status === "confirmed"; });
+    var doneHTML = done.length
+      ? '<div class="section-title" style="margin-top:22px">✓ Settled payments</div><div class="stack">' + done.map(function (s) {
+          var amParty = myId && (myId === s.from || myId === s.to);
+          return '<div class="settle-row done">' +
+            '<div class="settle__main">' +
+              '<div class="avatar" style="background:' + colorFor(s.from) + '">' + esc(initials(personName(trip, s.from))) + '</div>' +
+              '<div class="settle__names"><b>' + nameHTML(personName(trip, s.from)) + '</b> <span class="settle__arrow">→</span> <b>' + nameHTML(personName(trip, s.to)) + '</b>' +
+                '<div class="settle__sub">✓ confirmed by ' + esc(s.confirmedBy || "") + '</div></div>' +
+              '<div class="settle__amt">' + money(s.amount, trip.currency) + '</div>' +
+            '</div>' +
+            (amParty ? '<div class="settle__foot"><button class="btn btn--ghost btn--xs" data-action="cancel-settlement" data-id="' + esc(s.id) + '">↺ Undo</button></div>' : '') +
+          '</div>';
+        }).join("") + '</div>'
+      : "";
 
     // detailed per-person analysis: paid vs share vs net
     var stats = computeStats(trip);
@@ -902,6 +978,7 @@
       '</div>' +
       '<div class="section-title">Who pays whom</div>' +
       settleHTML +
+      doneHTML +
       '<div class="section-title" style="margin-top:22px">Split analysis · paid vs share</div>' +
       balHTML
     );
@@ -1431,7 +1508,8 @@
       '<div class="section-title">Attended</div>' +
       '<div class="chips" style="margin-bottom:18px">' + attendeeList + '</div>' +
       adminActions +
-      '<button class="btn btn--block btn--soft" id="editExp">✏️ Edit expense</button>';
+      '<button class="btn btn--block btn--soft" id="editExp">✏️ Edit expense</button>' +
+      (state.trips.length > 1 ? '<button class="btn btn--block btn--soft" id="moveExp" style="margin-top:10px">📦 Move to another city</button>' : '');
 
     openSheet("Expense", body, function (sheet) {
       var dp = sheet.querySelector("#detailPhoto");
@@ -1447,6 +1525,8 @@
       sheet.querySelector("#editExp").addEventListener("click", function () {
         closeSheet(true); expenseFormSheet(trip, e);
       });
+      var mv = sheet.querySelector("#moveExp");
+      if (mv) mv.addEventListener("click", function () { closeSheet(true); moveExpenseSheet(trip, e); });
     });
   }
 
@@ -1482,6 +1562,90 @@
         });
       });
     });
+  }
+
+  /* ---------- Settlement approval (two-step: propose, other party confirms) ---------- */
+  function proposeSettlement(trip, from, to, amount) {
+    if (!trip.settlements) trip.settlements = [];
+    var s = { id: uid(), from: from, to: to, amount: amount, status: "proposed",
+              proposedBy: (state.auth && state.auth.name) || "", confirmedBy: "", createdAt: Date.now() };
+    trip.settlements.push(s);
+    save(); render();
+    toast("Marked as paid — waiting for the other party to confirm");
+    api("proposeSettlement", { tripId: trip.id, id: s.id, from: from, to: to, amount: amount,
+      name: state.auth && state.auth.name, code: state.auth && state.auth.code })
+      .then(function (r) {
+        if (r && r.ok === false) {
+          trip.settlements = (trip.settlements || []).filter(function (x) { return x.id !== s.id; });
+          render(); toast(r.error === "not a party" ? "Only the two people in this payment can settle it" : "Couldn't record that", "bad");
+        }
+      }).catch(function () {});
+  }
+  function confirmSettlement(trip, id) {
+    var s = (trip.settlements || []).filter(function (x) { return x.id === id; })[0];
+    if (!s) return;
+    s.status = "confirmed"; s.confirmedBy = (state.auth && state.auth.name) || "";
+    save(); render();
+    toast("Settlement confirmed ✓", "good");
+    api("confirmSettlement", { tripId: trip.id, id: id, name: state.auth && state.auth.name, code: state.auth && state.auth.code })
+      .then(function (r) {
+        if (r && r.ok === false) {
+          s.status = "proposed"; s.confirmedBy = ""; render();
+          toast(r.error === "the other party must confirm" ? "The other party has to confirm this one" : "Couldn't confirm", "bad");
+        }
+      }).catch(function () {});
+  }
+  function cancelSettlement(trip, id) {
+    trip.settlements = (trip.settlements || []).filter(function (x) { return x.id !== id; });
+    save(); render();
+    api("cancelSettlement", { tripId: trip.id, id: id, name: state.auth && state.auth.name, code: state.auth && state.auth.code }).catch(function () {});
+  }
+
+  /* ---------- Move an expense to another city ---------- */
+  function convertAmount(amount, fromCur, toCur) {
+    if (String(fromCur || "") === String(toCur || "")) return amount;
+    var v = amount * rateFor(fromCur) / rateFor(toCur);
+    return Math.round(v * 100) / 100;
+  }
+  function moveExpenseSheet(trip, e) {
+    var others = state.trips.filter(function (t) { return t.id !== trip.id; });
+    if (!others.length) { toast("No other city yet — create another trip first"); return; }
+    var body = '<div class="hint" style="margin-bottom:14px">Move “' + esc(e.title) + '” (' + money(e.amount, trip.currency) +
+        ') to another city. People are matched by name; anyone missing is added there.</div>' +
+      '<div class="stack">' + others.map(function (t) {
+        var conv = "";
+        if (String(t.currency || "") !== String(trip.currency || "")) {
+          conv = '<div class="settle__sub">converts to ' + money(convertAmount(e.amount, trip.currency, t.currency), t.currency) + '</div>';
+        }
+        return '<button class="btn btn--block btn--soft move-target" data-id="' + esc(t.id) + '" style="text-align:left;height:auto;padding:13px 15px;margin-bottom:8px">' +
+          '<span style="font-size:18px;margin-right:8px">' + (t.emoji || "🏙️") + '</span>' + esc(t.name) + ' · ' + esc(t.currency || "") + conv + '</button>';
+      }).join("") + '</div>';
+    openSheet("Move to another city", body, function (sheet) {
+      sheet.querySelectorAll(".move-target").forEach(function (b) {
+        b.addEventListener("click", function () {
+          var dest = getTrip(b.getAttribute("data-id")); if (dest) doMoveExpense(trip, e, dest);
+        });
+      });
+    });
+  }
+  function doMoveExpense(trip, e, dest) {
+    var newAmount = convertAmount(e.amount, trip.currency, dest.currency);
+    var msg = "Move “" + e.title + "” to " + dest.name + "?";
+    if (newAmount !== e.amount) msg += "\n\nAmount converts " + money(e.amount, trip.currency) + " → " + money(newAmount, dest.currency) + ".";
+    if (!confirm(msg)) return;
+    trip.expenses = (trip.expenses || []).filter(function (x) { return x.id !== e.id; }); // optimistic
+    save(); closeSheet(); render(); toast("Moving…");
+    api("moveExpense", { fromTripId: trip.id, toTripId: dest.id, expenseId: e.id, amount: newAmount,
+      name: state.auth && state.auth.name, code: state.auth && state.auth.code })
+      .then(function (r) {
+        if (r && r.ok) {
+          pullTrip({ id: dest.id }, function () { pullTrip({ id: trip.id }, function () { render(); toast("Moved to " + dest.name + " ✓", "good"); }); });
+        } else {
+          pullTrip({ id: trip.id }, function () { render(); });
+          toast(r && r.error ? "Couldn't move: " + r.error : "Couldn't move the expense", "bad");
+        }
+      })
+      .catch(function () { pullTrip({ id: trip.id }, function () { render(); }); toast("Couldn't move — check your connection", "bad"); });
   }
 
   /* ---------- Trip options menu ---------- */
@@ -1540,20 +1704,45 @@
   /* ============================================================
      People add/remove
      ============================================================ */
-  function addPersonFromInput() {
-    var trip = getTrip(view.tripId); if (!trip) return;
-    var input = document.getElementById("newPerson");
-    if (!input) return;
-    var name = input.value.trim();
-    if (!name) { input.focus(); return; }
+  // Names already in your other cities + the user directory, minus this trip's
+  // people — used for the "add existing person" dropdown.
+  function existingNamesPool(trip) {
+    var inTrip = {};
+    (trip.people || []).forEach(function (p) { inTrip[String(p.name || "").trim().toLowerCase()] = 1; });
+    var pool = {};
+    state.trips.forEach(function (t) {
+      (t.people || []).forEach(function (p) {
+        var key = String(p.name || "").trim().toLowerCase();
+        if (key && !inTrip[key]) pool[key] = String(p.name).trim();
+      });
+    });
+    memberDirectory.forEach(function (n) {
+      var key = String(n || "").trim().toLowerCase();
+      if (key && !inTrip[key]) pool[key] = n;
+    });
+    return Object.keys(pool).sort().map(function (k) { return pool[k]; });
+  }
+  // Add a person by name (deduped, case-insensitive). Returns true if added.
+  function addPersonNamed(name) {
+    var trip = getTrip(view.tripId); if (!trip) return false;
+    name = String(name || "").trim();
+    if (!name) return false;
+    var key = name.toLowerCase();
+    if ((trip.people || []).some(function (p) { return String(p.name || "").trim().toLowerCase() === key; })) {
+      toast(name + " is already in this city"); return false;
+    }
     var person = { id: uid(), name: name };
     trip.people.push(person);
     push("addPerson", { tripId: trip.id, person: person });
-    save();
-    render();
-    // re-focus the (re-rendered) input for fast multi-add
-    var again = document.getElementById("newPerson");
-    if (again) again.focus();
+    save(); render();
+    return true;
+  }
+  function addPersonFromInput() {
+    var input = document.getElementById("newPerson");
+    if (!input) return;
+    if (addPersonNamed(input.value)) {
+      var again = document.getElementById("newPerson"); if (again) again.focus(); // fast multi-add
+    } else { input.focus(); }
   }
 
   /* ============================================================
@@ -1575,7 +1764,7 @@
         if (!nm || !cd) { toast("Enter your name and code", "bad"); break; }
         toast("Signing in…");
         doLogin(nm, cd, remember, function (ok) {
-          if (ok) { view = { name: "trips" }; render(); stopPolling(); startPolling(); toast("Welcome, " + state.auth.name + " 👋", "good"); }
+          if (ok) { view = { name: "trips" }; render(); stopPolling(); startPolling(); refreshMemberDirectory(); toast("Welcome, " + state.auth.name + " 👋", "good"); }
           else { toast("Wrong name or code", "bad"); }
         });
         break;
@@ -1616,6 +1805,24 @@
           }
         }
         break;
+      case "propose-settlement":
+        if (trip) proposeSettlement(trip, el.getAttribute("data-from"), el.getAttribute("data-to"), parseFloat(el.getAttribute("data-amount")));
+        break;
+      case "confirm-settlement":
+        if (trip) confirmSettlement(trip, id);
+        break;
+      case "cancel-settlement":
+        if (trip) cancelSettlement(trip, id);
+        break;
+    }
+  });
+
+  // "Add existing person" dropdown in the People tab
+  document.addEventListener("change", function (ev) {
+    var sel = ev.target;
+    if (sel && sel.id === "existingPicker" && sel.value) {
+      addPersonNamed(sel.value);
+      sel.value = "";
     }
   });
 

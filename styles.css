@@ -249,6 +249,20 @@ h1,h2,h3 { margin: 0; font-weight: 700; letter-spacing: -.01em; }
 .settle__amt { margin-left: auto; font-weight: 750; color: var(--primary-dark); background: var(--primary-soft); padding: 6px 11px; border-radius: 10px; }
 .settle__names { font-weight: 600; font-size: 14.5px; }
 .settle__names b { font-weight: 700; }
+/* settlement rows with an approval action below */
+.settle-row { display: flex; flex-direction: column; gap: 10px; padding: 14px; background: var(--card); border-radius: 14px; box-shadow: var(--shadow); }
+.settle-row .settle__main { display: flex; align-items: center; gap: 12px; }
+.settle-row.pending { box-shadow: var(--shadow), inset 3px 0 0 #f59e0b; }
+.settle-row.done { opacity: .8; }
+.settle-row.done .settle__amt { color: #047857; background: var(--good-soft); }
+.settle__sub { font-size: 12px; color: var(--muted); font-weight: 600; margin-top: 2px; }
+.settle__foot { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding-left: 52px; }
+.settle__pending { font-size: 12.5px; color: #b9690a; font-weight: 700; }
+.btn--xs { height: auto; padding: 7px 12px; font-size: 12.5px; border-radius: 9px; width: auto; flex: none; }
+/* "add existing person" dropdown */
+.addrow--picker { margin-top: -4px; }
+.picker { width: 100%; padding: 13px 15px; border-radius: 13px; border: 1.5px solid var(--line); background: #fff url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'><path d='M2 4l4 4 4-4' stroke='%236b7280' stroke-width='1.7' fill='none' stroke-linecap='round'/></svg>") no-repeat right 14px center; -webkit-appearance: none; appearance: none; color: var(--ink); font-size: 15px; font-weight: 600; }
+.picker:focus { outline: none; border-color: var(--primary); }
 
 /* ---------- Empty states ---------- */
 .empty { text-align: center; padding: 44px 24px; }
