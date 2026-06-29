@@ -56,6 +56,20 @@ async function ensureSchema() {
   await sql`UPDATE expenses SET status = 'autoapproved' WHERE status = 'pending'`;
   await sql`CREATE TABLE IF NOT EXISTS deleted_trips (id TEXT PRIMARY KEY, deleted_at BIGINT)`;
   await sql`CREATE TABLE IF NOT EXISTS members (name_key TEXT PRIMARY KEY, name TEXT, code TEXT, is_admin BOOLEAN DEFAULT false)`;
+  // Settlement payments between two people in a trip. status: proposed | confirmed.
+  await sql`CREATE TABLE IF NOT EXISTS settlements (
+    id TEXT PRIMARY KEY,
+    trip_id TEXT NOT NULL,
+    from_person TEXT NOT NULL,
+    to_person TEXT NOT NULL,
+    amount DOUBLE PRECISION NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'proposed',
+    proposed_by TEXT,
+    confirmed_by TEXT,
+    created_at BIGINT,
+    confirmed_at BIGINT
+  )`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_settlements_trip ON settlements(trip_id)`;
   schemaReady = true;
 }
 
@@ -63,6 +77,7 @@ async function assembleTrip(row) {
   if (!row) return null;
   const people = await sql`SELECT id, name FROM people WHERE trip_id = ${row.id} ORDER BY name`;
   const expenses = await sql`SELECT * FROM expenses WHERE trip_id = ${row.id} ORDER BY date DESC NULLS LAST, created_at DESC`;
+  const settlements = await sql`SELECT * FROM settlements WHERE trip_id = ${row.id} ORDER BY created_at`;
   return {
     id: row.id,
     code: row.code,
@@ -71,6 +86,16 @@ async function assembleTrip(row) {
     emoji: row.emoji,
     createdAt: Number(row.created_at) || 0,
     updatedAt: Number(row.updated_at) || 0,
+    settlements: settlements.map((s) => ({
+      id: s.id,
+      from: s.from_person,
+      to: s.to_person,
+      amount: Number(s.amount),
+      status: s.status || "proposed",
+      proposedBy: s.proposed_by || "",
+      confirmedBy: s.confirmed_by || "",
+      createdAt: Number(s.created_at) || 0,
+    })),
     people: people.map((p) => ({ id: p.id, name: p.name })),
     expenses: expenses.map((e) => ({
       id: e.id,
@@ -282,6 +307,109 @@ export default async function handler(req, res) {
           RETURNING name_key`;
         if (!ins.length) return res.status(200).json({ ok: false, exists: true });
         return res.status(200).json({ ok: true, name: disp });
+      }
+
+      // Directory of member names — any valid member (for the add-person dropdown).
+      case "listMemberNames": {
+        const k = String(body.name || "").trim().toLowerCase();
+        const c = String(body.code || "").trim();
+        const mm = await sql`SELECT 1 FROM members WHERE name_key = ${k} AND code = ${c}`;
+        if (!mm.length) return res.status(200).json({ ok: false });
+        const rows = await sql`SELECT name FROM members ORDER BY name`;
+        return res.status(200).json({ ok: true, names: rows.map((r) => r.name).filter(Boolean) });
+      }
+
+      // Propose a settlement payment — caller must be one of the two parties.
+      case "proposeSettlement": {
+        const k = String(body.name || "").trim().toLowerCase();
+        const c = String(body.code || "").trim();
+        const mm = await sql`SELECT name FROM members WHERE name_key = ${k} AND code = ${c}`;
+        if (!mm.length) return res.status(200).json({ ok: false, error: "not a member" });
+        const tripId = String(body.tripId || ""), from = String(body.from || ""), to = String(body.to || "");
+        const amount = Number(body.amount) || 0;
+        if (!tripId || !from || !to || !(amount > 0)) return res.status(200).json({ ok: false, error: "bad input" });
+        const ppl = await sql`SELECT id, name FROM people WHERE trip_id = ${tripId} AND id IN (${from}, ${to})`;
+        const nameOf = {}; ppl.forEach((p) => (nameOf[p.id] = String(p.name || "").trim().toLowerCase()));
+        if (nameOf[from] !== k && nameOf[to] !== k) return res.status(200).json({ ok: false, error: "not a party" });
+        const id = String(body.id || ("s" + Date.now()));
+        await sql`INSERT INTO settlements (id, trip_id, from_person, to_person, amount, status, proposed_by, created_at)
+          VALUES (${id}, ${tripId}, ${from}, ${to}, ${amount}, 'proposed', ${mm[0].name}, ${Date.now()})
+          ON CONFLICT (id) DO NOTHING`;
+        await sql`UPDATE trips SET updated_at = ${Date.now()} WHERE id = ${tripId}`;
+        return res.status(200).json({ ok: true, id });
+      }
+
+      // Confirm a proposed settlement — caller must be the OTHER party (not the proposer).
+      case "confirmSettlement": {
+        const k = String(body.name || "").trim().toLowerCase();
+        const c = String(body.code || "").trim();
+        const mm = await sql`SELECT name FROM members WHERE name_key = ${k} AND code = ${c}`;
+        if (!mm.length) return res.status(200).json({ ok: false, error: "not a member" });
+        const tripId = String(body.tripId || ""), id = String(body.id || "");
+        const rows = await sql`SELECT * FROM settlements WHERE id = ${id} AND trip_id = ${tripId}`;
+        if (!rows.length) return res.status(200).json({ ok: false, error: "not found" });
+        const s = rows[0];
+        const ppl = await sql`SELECT id, name FROM people WHERE trip_id = ${tripId} AND id IN (${s.from_person}, ${s.to_person})`;
+        const nameOf = {}; ppl.forEach((p) => (nameOf[p.id] = String(p.name || "").trim().toLowerCase()));
+        if (nameOf[s.from_person] !== k && nameOf[s.to_person] !== k) return res.status(200).json({ ok: false, error: "not a party" });
+        if (String(s.proposed_by || "").trim().toLowerCase() === k) return res.status(200).json({ ok: false, error: "the other party must confirm" });
+        await sql`UPDATE settlements SET status = 'confirmed', confirmed_by = ${mm[0].name}, confirmed_at = ${Date.now()} WHERE id = ${id} AND trip_id = ${tripId}`;
+        await sql`UPDATE trips SET updated_at = ${Date.now()} WHERE id = ${tripId}`;
+        return res.status(200).json({ ok: true });
+      }
+
+      // Cancel / undo a settlement — either party may cancel.
+      case "cancelSettlement": {
+        const k = String(body.name || "").trim().toLowerCase();
+        const c = String(body.code || "").trim();
+        const mm = await sql`SELECT 1 FROM members WHERE name_key = ${k} AND code = ${c}`;
+        if (!mm.length) return res.status(200).json({ ok: false, error: "not a member" });
+        const tripId = String(body.tripId || ""), id = String(body.id || "");
+        const rows = await sql`SELECT * FROM settlements WHERE id = ${id} AND trip_id = ${tripId}`;
+        if (!rows.length) return res.status(200).json({ ok: true });
+        const s = rows[0];
+        const ppl = await sql`SELECT id, name FROM people WHERE trip_id = ${tripId} AND id IN (${s.from_person}, ${s.to_person})`;
+        const nameOf = {}; ppl.forEach((p) => (nameOf[p.id] = String(p.name || "").trim().toLowerCase()));
+        if (nameOf[s.from_person] !== k && nameOf[s.to_person] !== k) return res.status(200).json({ ok: false, error: "not a party" });
+        await sql`DELETE FROM settlements WHERE id = ${id} AND trip_id = ${tripId}`;
+        await sql`UPDATE trips SET updated_at = ${Date.now()} WHERE id = ${tripId}`;
+        return res.status(200).json({ ok: true });
+      }
+
+      // Move an expense to another trip — remaps people by name (adding any missing),
+      // and stores the client-converted amount.
+      case "moveExpense": {
+        const k = String(body.name || "").trim().toLowerCase();
+        const c = String(body.code || "").trim();
+        const mm = await sql`SELECT 1 FROM members WHERE name_key = ${k} AND code = ${c}`;
+        if (!mm.length) return res.status(200).json({ ok: false, error: "not a member" });
+        const fromTrip = String(body.fromTripId || ""), toTrip = String(body.toTripId || ""), expId = String(body.expenseId || "");
+        if (!fromTrip || !toTrip || !expId || fromTrip === toTrip) return res.status(200).json({ ok: false, error: "bad input" });
+        const exRows = await sql`SELECT * FROM expenses WHERE id = ${expId} AND trip_id = ${fromTrip}`;
+        if (!exRows.length) return res.status(200).json({ ok: false, error: "expense not found" });
+        const ex = exRows[0];
+        const srcPeople = await sql`SELECT id, name FROM people WHERE trip_id = ${fromTrip}`;
+        const dstPeople = await sql`SELECT id, name FROM people WHERE trip_id = ${toTrip}`;
+        const srcName = {}; srcPeople.forEach((p) => (srcName[p.id] = p.name));
+        const dstByKey = {}; dstPeople.forEach((p) => (dstByKey[String(p.name || "").trim().toLowerCase()] = p.id));
+        let seq = 0;
+        async function mapPerson(srcId) {
+          const nm = srcName[srcId]; if (!nm) return null;
+          const key = String(nm).trim().toLowerCase();
+          if (dstByKey[key]) return dstByKey[key];
+          const newId = "p" + Date.now() + "_" + (seq++) + Math.floor(Math.random() * 1e6).toString(36);
+          await sql`INSERT INTO people (id, trip_id, name) VALUES (${newId}, ${toTrip}, ${nm}) ON CONFLICT (id) DO NOTHING`;
+          dstByKey[key] = newId;
+          return newId;
+        }
+        const newPaidBy = await mapPerson(ex.paid_by);
+        const srcAtt = Array.isArray(ex.attendees) ? ex.attendees : [];
+        const newAtt = [];
+        for (const id of srcAtt) { const m = await mapPerson(id); if (m) newAtt.push(m); }
+        const amt = Number.isFinite(Number(body.amount)) ? Number(body.amount) : Number(ex.amount);
+        await sql`UPDATE expenses SET trip_id = ${toTrip}, paid_by = ${newPaidBy}, attendees = ${JSON.stringify(newAtt)}::jsonb, amount = ${amt} WHERE id = ${expId}`;
+        await sql`UPDATE trips SET updated_at = ${Date.now()} WHERE id IN (${fromTrip}, ${toTrip})`;
+        return res.status(200).json({ ok: true });
       }
 
       default:
