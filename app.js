@@ -24,6 +24,7 @@
   /* ---------- State ---------- */
   var state = load();
   if (!state.rates || typeof state.rates !== "object") state.rates = {};
+  if (!Array.isArray(state.settlements)) state.settlements = []; // global overall settlements (SAR)
   var view = { name: "trips", tripId: null, tab: "expenses" };
   var memberDirectory = []; // names of all registered users (for the add-person dropdown)
 
@@ -299,7 +300,7 @@
       render(); // show cached trips while we refresh
       hydratePhotos(); // restore cached invoice photos from IndexedDB (offline-friendly)
       doLogin(saved.name, saved.code, saved.remember !== false, function (ok, reason) {
-        if (ok) { view = { name: "trips" }; render(); startPolling(); refreshMemberDirectory(); }
+        if (ok) { view = { name: "trips" }; render(); startPolling(); refreshMemberDirectory(); refreshSettlements(); }
         else if (reason === "invalid") {
           // Server says the credentials are no longer valid → really sign out.
           clearAuth(); state.auth = null; state.trips = []; save(); render();
@@ -322,6 +323,7 @@
       if (res && res.ok) {
         state.auth = { name: res.name, code: String(code), isAdmin: !!res.isAdmin, remember: keep };
         state.trips = res.trips || [];
+        state.settlements = res.settlements || [];
         saveAuth(state.auth, keep);
         save();
         if (cb) cb(true);
@@ -336,6 +338,17 @@
       if (r && r.ok && Array.isArray(r.names)) {
         memberDirectory = r.names;
         if (view.name === "trip" && view.tab === "people") render();
+      }
+    }).catch(function () {});
+  }
+
+  // Pull the global (overall) settlements from the cloud.
+  function refreshSettlements() {
+    if (!(state.auth && state.auth.name && state.auth.code)) return;
+    api("getSettlements", { name: state.auth.name, code: state.auth.code }).then(function (r) {
+      if (r && r.ok && Array.isArray(r.settlements)) {
+        state.settlements = r.settlements; save();
+        if (view.name === "overall") render();
       }
     }).catch(function () {});
   }
@@ -446,23 +459,13 @@
       if (bal[e.paidBy] !== undefined) bal[e.paidBy] += e.amount;   // payer fronted the whole bill
       attendees.forEach(function (id) { bal[id] -= share; });        // each attendee owes their share
     });
-    // confirmed settlements are real money moved: the payer (from) owes less,
-    // the payee (to) is owed less — so the suggested payment drops off.
-    (trip.settlements || []).forEach(function (s) {
-      if (s.status !== "confirmed") return;
-      if (bal[s.from] !== undefined) bal[s.from] += s.amount;
-      if (bal[s.to] !== undefined) bal[s.to] -= s.amount;
-    });
     // round to cents to avoid floating dust
     Object.keys(bal).forEach(function (k) { bal[k] = Math.round(bal[k] * 100) / 100; });
     return bal;
   }
-  // The trip person matching the logged-in user (by name), or null.
-  function myPersonId(trip) {
-    var nm = state.auth && state.auth.name ? String(state.auth.name).trim().toLowerCase() : "";
-    if (!nm) return null;
-    var p = (trip.people || []).filter(function (x) { return String(x.name || "").trim().toLowerCase() === nm; })[0];
-    return p ? p.id : null;
+  // Lowercased name of the logged-in user — used to match settlement parties.
+  function myNameKey() {
+    return state.auth && state.auth.name ? String(state.auth.name).trim().toLowerCase() : "";
   }
 
   // Per-person breakdown: total paid (fronted) vs share (what they consumed on
@@ -890,11 +893,6 @@
         null, null);
     }
     var tx = settle(bal);
-    var myId = myPersonId(trip);
-    var myNameLc = state.auth && state.auth.name ? String(state.auth.name).trim().toLowerCase() : "";
-    // pending (proposed) settlements, keyed by "from|to"
-    var pending = {};
-    (trip.settlements || []).forEach(function (s) { if (s.status === "proposed") pending[s.from + "|" + s.to] = s; });
 
     var settleHTML;
     if (!tx.length) {
@@ -903,49 +901,15 @@
         '<div class="hint">No payments needed.</div></div>';
     } else {
       settleHTML = '<div class="stack">' + tx.map(function (t) {
-        var amParty = myId && (myId === t.from || myId === t.to);
-        var pend = pending[t.from + "|" + t.to];
-        var action = "";
-        if (pend) {
-          var iProposed = myNameLc && String(pend.proposedBy || "").trim().toLowerCase() === myNameLc;
-          action = '<div class="settle__foot">' +
-            '<span class="settle__pending">⏳ ' + esc(pend.proposedBy || "Someone") + ' marked this paid' + (iProposed ? " — awaiting the other party" : "") + '</span>' +
-            (amParty && !iProposed ? '<button class="btn btn--ok btn--xs" data-action="confirm-settlement" data-id="' + esc(pend.id) + '">✓ Confirm</button>' : '') +
-            (amParty ? '<button class="btn btn--ghost btn--xs" data-action="cancel-settlement" data-id="' + esc(pend.id) + '">Cancel</button>' : '') +
-            '</div>';
-        } else if (amParty) {
-          var lbl = myId === t.from ? "I paid this" : "Mark received";
-          action = '<div class="settle__foot">' +
-            '<button class="btn btn--soft btn--xs" data-action="propose-settlement" data-from="' + esc(t.from) + '" data-to="' + esc(t.to) + '" data-amount="' + t.amount + '">' + lbl + '</button></div>';
-        }
         return (
-          '<div class="settle-row' + (pend ? " pending" : "") + '">' +
-            '<div class="settle__main">' +
-              '<div class="avatar" style="background:' + colorFor(t.from) + '">' + esc(initials(personName(trip, t.from))) + '</div>' +
-              '<div class="settle__names"><b>' + nameHTML(personName(trip, t.from)) + '</b> <span class="settle__arrow">→</span> <b>' + nameHTML(personName(trip, t.to)) + '</b></div>' +
-              '<div class="settle__amt">' + money(t.amount, trip.currency) + '</div>' +
-            '</div>' + action +
+          '<div class="settle">' +
+            '<div class="avatar" style="background:' + colorFor(t.from) + '">' + esc(initials(personName(trip, t.from))) + '</div>' +
+            '<div class="settle__names"><b>' + nameHTML(personName(trip, t.from)) + '</b> <span class="settle__arrow">→</span> <b>' + nameHTML(personName(trip, t.to)) + '</b></div>' +
+            '<div class="settle__amt">' + money(t.amount, trip.currency) + '</div>' +
           '</div>'
         );
       }).join("") + '</div>';
     }
-
-    // confirmed settlements — money already moved
-    var done = (trip.settlements || []).filter(function (s) { return s.status === "confirmed"; });
-    var doneHTML = done.length
-      ? '<div class="section-title" style="margin-top:22px">✓ Settled payments</div><div class="stack">' + done.map(function (s) {
-          var amParty = myId && (myId === s.from || myId === s.to);
-          return '<div class="settle-row done">' +
-            '<div class="settle__main">' +
-              '<div class="avatar" style="background:' + colorFor(s.from) + '">' + esc(initials(personName(trip, s.from))) + '</div>' +
-              '<div class="settle__names"><b>' + nameHTML(personName(trip, s.from)) + '</b> <span class="settle__arrow">→</span> <b>' + nameHTML(personName(trip, s.to)) + '</b>' +
-                '<div class="settle__sub">✓ confirmed by ' + esc(s.confirmedBy || "") + '</div></div>' +
-              '<div class="settle__amt">' + money(s.amount, trip.currency) + '</div>' +
-            '</div>' +
-            (amParty ? '<div class="settle__foot"><button class="btn btn--ghost btn--xs" data-action="cancel-settlement" data-id="' + esc(s.id) + '">↺ Undo</button></div>' : '') +
-          '</div>';
-        }).join("") + '</div>'
-      : "";
 
     // detailed per-person analysis: paid vs share vs net
     var stats = computeStats(trip);
@@ -978,7 +942,6 @@
       '</div>' +
       '<div class="section-title">Who pays whom</div>' +
       settleHTML +
-      doneHTML +
       '<div class="section-title" style="margin-top:22px">Split analysis · paid vs share</div>' +
       balHTML
     );
@@ -1061,31 +1024,45 @@
     return SAR_RATES[cur] || 1;
   }
 
-  // Convert every trip to SAR; settle each trip within its own group, then combine.
+  // Convert every trip to SAR and net each person across all trips, then apply
+  // confirmed overall settlements and settle the remaining balance. This is THE
+  // combined cross-trip settlement, where payments are marked/confirmed.
   function computeOverallSAR() {
-    var people = {}, txList = [];
+    var people = {};
     state.trips.forEach(function (trip) {
       var rate = rateFor(trip.currency || "EUR");
       var st = computeStats(trip);
       (trip.people || []).forEach(function (p) {
         var key = (p.name || "").trim().toLowerCase(); if (!key) return;
-        if (!people[key]) people[key] = { name: (p.name || "").trim(), net: 0, paid: 0, share: 0 };
+        if (!people[key]) people[key] = { key: key, name: (p.name || "").trim(), net: 0, paid: 0, share: 0 };
         people[key].net += (st.net[p.id] || 0) * rate;
         people[key].paid += (st.paid[p.id] || 0) * rate;
         people[key].share += (st.share[p.id] || 0) * rate;
       });
-      settle(computeBalances(trip)).forEach(function (t) {
-        txList.push({ from: personName(trip, t.from), to: personName(trip, t.to), amount: t.amount * rate });
-      });
+    });
+    // confirmed settlements (global, by name key, in SAR) move real money:
+    // the payer owes less, the payee is owed less.
+    (state.settlements || []).forEach(function (s) {
+      if (s.status !== "confirmed") return;
+      if (!people[s.from]) people[s.from] = { key: s.from, name: s.from, net: 0, paid: 0, share: 0 };
+      if (!people[s.to]) people[s.to] = { key: s.to, name: s.to, net: 0, paid: 0, share: 0 };
+      people[s.from].net += s.amount;
+      people[s.to].net -= s.amount;
     });
     Object.keys(people).forEach(function (k) {
       people[k].net = Math.round(people[k].net * 100) / 100;
       people[k].paid = Math.round(people[k].paid * 100) / 100;
       people[k].share = Math.round(people[k].share * 100) / 100;
     });
+    var bal = {}; Object.keys(people).forEach(function (k) { bal[k] = people[k].net; });
+    var tx = settle(bal).map(function (t) {
+      return { fromKey: t.from, toKey: t.to,
+        from: people[t.from] ? people[t.from].name : t.from,
+        to: people[t.to] ? people[t.to].name : t.to, amount: t.amount };
+    });
     var rows = Object.keys(people).map(function (k) { return people[k]; }).sort(function (a, b) { return b.net - a.net; });
     var total = rows.reduce(function (s, r) { return s + (r.paid || 0); }, 0);
-    return { settle: mergeTx(txList), rows: rows, total: Math.round(total * 100) / 100 };
+    return { settle: tx, rows: rows, total: Math.round(total * 100) / 100 };
   }
 
   // Sheet to edit exchange rates (SAR per 1 unit) for the currencies in use.
@@ -1162,15 +1139,52 @@
     var sarSection = "";
     if (groups.length) {
       var sar = computeOverallSAR();
+      var myKey = myNameKey();
+      var nameByKey = {}; sar.rows.forEach(function (r) { nameByKey[r.key] = r.name; });
+      var pendingS = {};
+      (state.settlements || []).forEach(function (s) { if (s.status === "proposed") pendingS[s.from + "|" + s.to] = s; });
       var sarSettle = !sar.settle.length
         ? '<div class="card" style="text-align:center;padding:20px"><div style="font-size:30px">🎉</div><div style="font-weight:700;margin-top:6px">Everyone is settled up</div></div>'
         : '<div class="stack">' + sar.settle.map(function (t) {
-            return '<div class="settle">' +
-              '<div class="avatar" style="background:' + colorFor(t.from.toLowerCase()) + '">' + esc(initials(t.from)) + '</div>' +
-              '<div class="settle__names"><b>' + nameHTML(t.from) + '</b> <span class="settle__arrow">→</span> <b>' + nameHTML(t.to) + '</b></div>' +
-              '<div class="settle__amt">' + money(t.amount, "SAR") + '</div>' +
-            '</div>';
+            var amParty = myKey && (myKey === t.fromKey || myKey === t.toKey);
+            var pend = pendingS[t.fromKey + "|" + t.toKey];
+            var action = "";
+            if (pend) {
+              var iProposed = myKey && String(pend.proposedBy || "").trim().toLowerCase() === myKey;
+              action = '<div class="settle__foot">' +
+                '<span class="settle__pending">⏳ ' + esc(pend.proposedBy || "Someone") + ' marked this paid' + (iProposed ? " — awaiting the other party" : "") + '</span>' +
+                (amParty && !iProposed ? '<button class="btn btn--ok btn--xs" data-action="confirm-settlement" data-id="' + esc(pend.id) + '">✓ Confirm</button>' : '') +
+                (amParty ? '<button class="btn btn--ghost btn--xs" data-action="cancel-settlement" data-id="' + esc(pend.id) + '">Cancel</button>' : '') +
+                '</div>';
+            } else if (amParty) {
+              var lbl = myKey === t.fromKey ? "I paid this" : "Mark received";
+              action = '<div class="settle__foot">' +
+                '<button class="btn btn--soft btn--xs" data-action="propose-settlement" data-from="' + esc(t.fromKey) + '" data-to="' + esc(t.toKey) + '" data-amount="' + t.amount + '">' + lbl + '</button></div>';
+            }
+            return '<div class="settle-row' + (pend ? " pending" : "") + '">' +
+                '<div class="settle__main">' +
+                  '<div class="avatar" style="background:' + colorFor(t.fromKey) + '">' + esc(initials(t.from)) + '</div>' +
+                  '<div class="settle__names"><b>' + nameHTML(t.from) + '</b> <span class="settle__arrow">→</span> <b>' + nameHTML(t.to) + '</b></div>' +
+                  '<div class="settle__amt">' + money(t.amount, "SAR") + '</div>' +
+                '</div>' + action +
+              '</div>';
           }).join("") + '</div>';
+      var confirmedS = (state.settlements || []).filter(function (s) { return s.status === "confirmed"; });
+      var sarDone = confirmedS.length
+        ? '<div class="section-title" style="margin-top:20px">✓ Settled payments</div><div class="stack">' + confirmedS.map(function (s) {
+            var fromNm = nameByKey[s.from] || s.from, toNm = nameByKey[s.to] || s.to;
+            var amParty = myKey && (myKey === s.from || myKey === s.to);
+            return '<div class="settle-row done">' +
+              '<div class="settle__main">' +
+                '<div class="avatar" style="background:' + colorFor(s.from) + '">' + esc(initials(fromNm)) + '</div>' +
+                '<div class="settle__names"><b>' + nameHTML(fromNm) + '</b> <span class="settle__arrow">→</span> <b>' + nameHTML(toNm) + '</b>' +
+                  '<div class="settle__sub">✓ confirmed by ' + esc(s.confirmedBy || "") + '</div></div>' +
+                '<div class="settle__amt">' + money(s.amount, "SAR") + '</div>' +
+              '</div>' +
+              (amParty ? '<div class="settle__foot"><button class="btn btn--ghost btn--xs" data-action="cancel-settlement" data-id="' + esc(s.id) + '">↺ Undo</button></div>' : '') +
+            '</div>';
+          }).join("") + '</div>'
+        : "";
       var sarRows = '<div class="stack">' + sar.rows.map(function (r) {
         var cls = Math.abs(r.net) < 0.005 ? "" : r.net > 0 ? "txt-good" : "txt-bad";
         var label = Math.abs(r.net) < 0.005 ? "settled" : r.net > 0 ? "+" + money(r.net, "SAR") : money(r.net, "SAR");
@@ -1195,6 +1209,7 @@
           '<button class="linkbtn" data-action="edit-rates">Edit rates</button>' +
         '</div>' +
         sarSettle +
+        sarDone +
         '<div class="section-title" style="margin-top:18px">Each person · SAR</div>' +
         sarRows;
     }
@@ -1565,29 +1580,29 @@
   }
 
   /* ---------- Settlement approval (two-step: propose, other party confirms) ---------- */
-  function proposeSettlement(trip, from, to, amount) {
-    if (!trip.settlements) trip.settlements = [];
-    var s = { id: uid(), from: from, to: to, amount: amount, status: "proposed",
+  // Settlements are global (overall, by name key, in SAR).
+  function proposeSettlement(fromKey, toKey, amount) {
+    var s = { id: uid(), from: fromKey, to: toKey, amount: amount, status: "proposed",
               proposedBy: (state.auth && state.auth.name) || "", confirmedBy: "", createdAt: Date.now() };
-    trip.settlements.push(s);
+    state.settlements.push(s);
     save(); render();
     toast("Marked as paid — waiting for the other party to confirm");
-    api("proposeSettlement", { tripId: trip.id, id: s.id, from: from, to: to, amount: amount,
+    api("proposeSettlement", { id: s.id, from: fromKey, to: toKey, amount: amount,
       name: state.auth && state.auth.name, code: state.auth && state.auth.code })
       .then(function (r) {
         if (r && r.ok === false) {
-          trip.settlements = (trip.settlements || []).filter(function (x) { return x.id !== s.id; });
+          state.settlements = state.settlements.filter(function (x) { return x.id !== s.id; });
           render(); toast(r.error === "not a party" ? "Only the two people in this payment can settle it" : "Couldn't record that", "bad");
         }
       }).catch(function () {});
   }
-  function confirmSettlement(trip, id) {
-    var s = (trip.settlements || []).filter(function (x) { return x.id === id; })[0];
+  function confirmSettlement(id) {
+    var s = (state.settlements || []).filter(function (x) { return x.id === id; })[0];
     if (!s) return;
     s.status = "confirmed"; s.confirmedBy = (state.auth && state.auth.name) || "";
     save(); render();
     toast("Settlement confirmed ✓", "good");
-    api("confirmSettlement", { tripId: trip.id, id: id, name: state.auth && state.auth.name, code: state.auth && state.auth.code })
+    api("confirmSettlement", { id: id, name: state.auth && state.auth.name, code: state.auth && state.auth.code })
       .then(function (r) {
         if (r && r.ok === false) {
           s.status = "proposed"; s.confirmedBy = ""; render();
@@ -1595,10 +1610,10 @@
         }
       }).catch(function () {});
   }
-  function cancelSettlement(trip, id) {
-    trip.settlements = (trip.settlements || []).filter(function (x) { return x.id !== id; });
+  function cancelSettlement(id) {
+    state.settlements = (state.settlements || []).filter(function (x) { return x.id !== id; });
     save(); render();
-    api("cancelSettlement", { tripId: trip.id, id: id, name: state.auth && state.auth.name, code: state.auth && state.auth.code }).catch(function () {});
+    api("cancelSettlement", { id: id, name: state.auth && state.auth.name, code: state.auth && state.auth.code }).catch(function () {});
   }
 
   /* ---------- Move an expense to another city ---------- */
@@ -1774,7 +1789,7 @@
         break;
       case "new-trip": tripFormSheet(null); break;
       case "menu": appMenuSheet(); break;
-      case "overall": view = { name: "overall" }; render(); break;
+      case "overall": view = { name: "overall" }; render(); refreshSettlements(); break;
       case "back-home": view = { name: "trips" }; render(); break;
       case "edit-rates": ratesSheet(); break;
       case "open-trip": view = { name: "trip", tripId: id, tab: "expenses" }; render(); break;
@@ -1806,14 +1821,10 @@
         }
         break;
       case "propose-settlement":
-        if (trip) proposeSettlement(trip, el.getAttribute("data-from"), el.getAttribute("data-to"), parseFloat(el.getAttribute("data-amount")));
+        proposeSettlement(el.getAttribute("data-from"), el.getAttribute("data-to"), parseFloat(el.getAttribute("data-amount")));
         break;
-      case "confirm-settlement":
-        if (trip) confirmSettlement(trip, id);
-        break;
-      case "cancel-settlement":
-        if (trip) cancelSettlement(trip, id);
-        break;
+      case "confirm-settlement": confirmSettlement(id); break;
+      case "cancel-settlement": cancelSettlement(id); break;
     }
   });
 

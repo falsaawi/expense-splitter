@@ -73,11 +73,29 @@ async function ensureSchema() {
   schemaReady = true;
 }
 
+// Settlements are global (cross-trip), between two people by name key, in SAR.
+const OVERALL = "__overall__";
+function mapSettlement(s) {
+  return {
+    id: s.id,
+    from: s.from_person,
+    to: s.to_person,
+    amount: Number(s.amount),
+    status: s.status || "proposed",
+    proposedBy: s.proposed_by || "",
+    confirmedBy: s.confirmed_by || "",
+    createdAt: Number(s.created_at) || 0,
+  };
+}
+async function overallSettlements() {
+  const rows = await sql`SELECT * FROM settlements WHERE trip_id = ${OVERALL} ORDER BY created_at`;
+  return rows.map(mapSettlement);
+}
+
 async function assembleTrip(row) {
   if (!row) return null;
   const people = await sql`SELECT id, name FROM people WHERE trip_id = ${row.id} ORDER BY name`;
   const expenses = await sql`SELECT * FROM expenses WHERE trip_id = ${row.id} ORDER BY date DESC NULLS LAST, created_at DESC`;
-  const settlements = await sql`SELECT * FROM settlements WHERE trip_id = ${row.id} ORDER BY created_at`;
   return {
     id: row.id,
     code: row.code,
@@ -86,16 +104,6 @@ async function assembleTrip(row) {
     emoji: row.emoji,
     createdAt: Number(row.created_at) || 0,
     updatedAt: Number(row.updated_at) || 0,
-    settlements: settlements.map((s) => ({
-      id: s.id,
-      from: s.from_person,
-      to: s.to_person,
-      amount: Number(s.amount),
-      status: s.status || "proposed",
-      proposedBy: s.proposed_by || "",
-      confirmedBy: s.confirmed_by || "",
-      createdAt: Number(s.created_at) || 0,
-    })),
     people: people.map((p) => ({ id: p.id, name: p.name })),
     expenses: expenses.map((e) => ({
       id: e.id,
@@ -194,7 +202,7 @@ export default async function handler(req, res) {
         }
         const trips = [];
         for (const r of tripRows) { const t = await assembleTrip(r); if (t) trips.push(t); }
-        return res.status(200).json({ ok: true, name: m.name, isAdmin: !!m.is_admin, trips });
+        return res.status(200).json({ ok: true, name: m.name, isAdmin: !!m.is_admin, trips, settlements: await overallSettlements() });
       }
 
       case "getTrips": {
@@ -319,23 +327,30 @@ export default async function handler(req, res) {
         return res.status(200).json({ ok: true, names: rows.map((r) => r.name).filter(Boolean) });
       }
 
-      // Propose a settlement payment — caller must be one of the two parties.
+      // Overall settlements are global (by name key, in SAR). All overall settlements.
+      case "getSettlements": {
+        const k = String(body.name || "").trim().toLowerCase();
+        const c = String(body.code || "").trim();
+        const mm = await sql`SELECT 1 FROM members WHERE name_key = ${k} AND code = ${c}`;
+        if (!mm.length) return res.status(200).json({ ok: false });
+        return res.status(200).json({ ok: true, settlements: await overallSettlements() });
+      }
+
+      // Propose a settlement — caller must be one of the two parties (by name key).
       case "proposeSettlement": {
         const k = String(body.name || "").trim().toLowerCase();
         const c = String(body.code || "").trim();
         const mm = await sql`SELECT name FROM members WHERE name_key = ${k} AND code = ${c}`;
         if (!mm.length) return res.status(200).json({ ok: false, error: "not a member" });
-        const tripId = String(body.tripId || ""), from = String(body.from || ""), to = String(body.to || "");
+        const from = String(body.from || "").trim().toLowerCase();
+        const to = String(body.to || "").trim().toLowerCase();
         const amount = Number(body.amount) || 0;
-        if (!tripId || !from || !to || !(amount > 0)) return res.status(200).json({ ok: false, error: "bad input" });
-        const ppl = await sql`SELECT id, name FROM people WHERE trip_id = ${tripId} AND id IN (${from}, ${to})`;
-        const nameOf = {}; ppl.forEach((p) => (nameOf[p.id] = String(p.name || "").trim().toLowerCase()));
-        if (nameOf[from] !== k && nameOf[to] !== k) return res.status(200).json({ ok: false, error: "not a party" });
+        if (!from || !to || from === to || !(amount > 0)) return res.status(200).json({ ok: false, error: "bad input" });
+        if (k !== from && k !== to) return res.status(200).json({ ok: false, error: "not a party" });
         const id = String(body.id || ("s" + Date.now()));
         await sql`INSERT INTO settlements (id, trip_id, from_person, to_person, amount, status, proposed_by, created_at)
-          VALUES (${id}, ${tripId}, ${from}, ${to}, ${amount}, 'proposed', ${mm[0].name}, ${Date.now()})
+          VALUES (${id}, ${OVERALL}, ${from}, ${to}, ${amount}, 'proposed', ${mm[0].name}, ${Date.now()})
           ON CONFLICT (id) DO NOTHING`;
-        await sql`UPDATE trips SET updated_at = ${Date.now()} WHERE id = ${tripId}`;
         return res.status(200).json({ ok: true, id });
       }
 
@@ -345,16 +360,13 @@ export default async function handler(req, res) {
         const c = String(body.code || "").trim();
         const mm = await sql`SELECT name FROM members WHERE name_key = ${k} AND code = ${c}`;
         if (!mm.length) return res.status(200).json({ ok: false, error: "not a member" });
-        const tripId = String(body.tripId || ""), id = String(body.id || "");
-        const rows = await sql`SELECT * FROM settlements WHERE id = ${id} AND trip_id = ${tripId}`;
+        const id = String(body.id || "");
+        const rows = await sql`SELECT * FROM settlements WHERE id = ${id} AND trip_id = ${OVERALL}`;
         if (!rows.length) return res.status(200).json({ ok: false, error: "not found" });
         const s = rows[0];
-        const ppl = await sql`SELECT id, name FROM people WHERE trip_id = ${tripId} AND id IN (${s.from_person}, ${s.to_person})`;
-        const nameOf = {}; ppl.forEach((p) => (nameOf[p.id] = String(p.name || "").trim().toLowerCase()));
-        if (nameOf[s.from_person] !== k && nameOf[s.to_person] !== k) return res.status(200).json({ ok: false, error: "not a party" });
+        if (k !== String(s.from_person) && k !== String(s.to_person)) return res.status(200).json({ ok: false, error: "not a party" });
         if (String(s.proposed_by || "").trim().toLowerCase() === k) return res.status(200).json({ ok: false, error: "the other party must confirm" });
-        await sql`UPDATE settlements SET status = 'confirmed', confirmed_by = ${mm[0].name}, confirmed_at = ${Date.now()} WHERE id = ${id} AND trip_id = ${tripId}`;
-        await sql`UPDATE trips SET updated_at = ${Date.now()} WHERE id = ${tripId}`;
+        await sql`UPDATE settlements SET status = 'confirmed', confirmed_by = ${mm[0].name}, confirmed_at = ${Date.now()} WHERE id = ${id}`;
         return res.status(200).json({ ok: true });
       }
 
@@ -364,15 +376,12 @@ export default async function handler(req, res) {
         const c = String(body.code || "").trim();
         const mm = await sql`SELECT 1 FROM members WHERE name_key = ${k} AND code = ${c}`;
         if (!mm.length) return res.status(200).json({ ok: false, error: "not a member" });
-        const tripId = String(body.tripId || ""), id = String(body.id || "");
-        const rows = await sql`SELECT * FROM settlements WHERE id = ${id} AND trip_id = ${tripId}`;
+        const id = String(body.id || "");
+        const rows = await sql`SELECT * FROM settlements WHERE id = ${id} AND trip_id = ${OVERALL}`;
         if (!rows.length) return res.status(200).json({ ok: true });
         const s = rows[0];
-        const ppl = await sql`SELECT id, name FROM people WHERE trip_id = ${tripId} AND id IN (${s.from_person}, ${s.to_person})`;
-        const nameOf = {}; ppl.forEach((p) => (nameOf[p.id] = String(p.name || "").trim().toLowerCase()));
-        if (nameOf[s.from_person] !== k && nameOf[s.to_person] !== k) return res.status(200).json({ ok: false, error: "not a party" });
-        await sql`DELETE FROM settlements WHERE id = ${id} AND trip_id = ${tripId}`;
-        await sql`UPDATE trips SET updated_at = ${Date.now()} WHERE id = ${tripId}`;
+        if (k !== String(s.from_person) && k !== String(s.to_person)) return res.status(200).json({ ok: false, error: "not a party" });
+        await sql`DELETE FROM settlements WHERE id = ${id}`;
         return res.status(200).json({ ok: true });
       }
 
