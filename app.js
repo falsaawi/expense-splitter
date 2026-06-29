@@ -1024,11 +1024,13 @@
     return SAR_RATES[cur] || 1;
   }
 
-  // Convert every trip to SAR and net each person across all trips, then apply
-  // confirmed overall settlements and settle the remaining balance. This is THE
-  // combined cross-trip settlement, where payments are marked/confirmed.
+  // Combined cross-trip settlement in SAR. Each trip is settled WITHIN itself
+  // (so only people who actually shared a trip ever owe each other), and those
+  // transfers are merged across trips by name. Confirmed settlements are applied
+  // as offsets that reduce the matching debt. This is where payments are
+  // marked/confirmed.
   function computeOverallSAR() {
-    var people = {};
+    var people = {}, txList = [];
     state.trips.forEach(function (trip) {
       var rate = rateFor(trip.currency || "EUR");
       var st = computeStats(trip);
@@ -1039,26 +1041,29 @@
         people[key].paid += (st.paid[p.id] || 0) * rate;
         people[key].share += (st.share[p.id] || 0) * rate;
       });
+      // settle this trip on its own — only same-trip people pay each other
+      settle(computeBalances(trip)).forEach(function (t) {
+        txList.push({ from: personName(trip, t.from), to: personName(trip, t.to), amount: t.amount * rate });
+      });
     });
-    // confirmed settlements (global, by name key, in SAR) move real money:
-    // the payer owes less, the payee is owed less.
+    // confirmed settlements move real money: the payer owes less, the payee is
+    // owed less. Apply to net, and push a reverse transfer to cancel that debt.
     (state.settlements || []).forEach(function (s) {
       if (s.status !== "confirmed") return;
-      if (!people[s.from]) people[s.from] = { key: s.from, name: s.from, net: 0, paid: 0, share: 0 };
-      if (!people[s.to]) people[s.to] = { key: s.to, name: s.to, net: 0, paid: 0, share: 0 };
-      people[s.from].net += s.amount;
-      people[s.to].net -= s.amount;
+      if (people[s.from]) people[s.from].net += s.amount;
+      if (people[s.to]) people[s.to].net -= s.amount;
+      var fromNm = people[s.from] ? people[s.from].name : s.from;
+      var toNm = people[s.to] ? people[s.to].name : s.to;
+      txList.push({ from: toNm, to: fromNm, amount: s.amount });
     });
     Object.keys(people).forEach(function (k) {
       people[k].net = Math.round(people[k].net * 100) / 100;
       people[k].paid = Math.round(people[k].paid * 100) / 100;
       people[k].share = Math.round(people[k].share * 100) / 100;
     });
-    var bal = {}; Object.keys(people).forEach(function (k) { bal[k] = people[k].net; });
-    var tx = settle(bal).map(function (t) {
-      return { fromKey: t.from, toKey: t.to,
-        from: people[t.from] ? people[t.from].name : t.from,
-        to: people[t.to] ? people[t.to].name : t.to, amount: t.amount };
+    var tx = mergeTx(txList).map(function (t) {
+      return { fromKey: String(t.from).trim().toLowerCase(), toKey: String(t.to).trim().toLowerCase(),
+        from: t.from, to: t.to, amount: t.amount };
     });
     var rows = Object.keys(people).map(function (k) { return people[k]; }).sort(function (a, b) { return b.net - a.net; });
     var total = rows.reduce(function (s, r) { return s + (r.paid || 0); }, 0);
